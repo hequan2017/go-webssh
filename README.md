@@ -30,6 +30,7 @@ func NewSshClient() (*ssh.Client, error) {
 
 ```
 >  go install
+
 >  go run main.go
 
 ## 前端
