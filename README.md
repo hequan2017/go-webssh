@@ -29,9 +29,13 @@ func NewSshClient() (*ssh.Client, error) {
 }
 
 ```
->  go install
 
->  go run main.go
+```shell script
+
+go build main.go
+go run  main.go 
+
+```
 
 ## 前端
 > 我测试的时候用得是 vue，你可以放进你们项目里面。在web/vue/index.vue里面，记得修改32行的 后端地址
