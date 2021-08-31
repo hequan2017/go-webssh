@@ -38,11 +38,13 @@ go run  main.go
 ```
 
 ## 前端
-> 我测试的时候用得是 vue，你可以放进你们项目里面。在web/vue/index.vue里面，记得修改32行的 后端地址
+> 我测试的时候用得是 vue，你可以放进你们项目里面。在web/vue/index.vue里面，记得修改32行的 后端地址 xterm是3版本
+
+> xterm 4 版本 可以参考我这个 博客 https://blog.51cto.com/hequan/3712190
 
 > 也可以自己弄个普通 index.html ，放一个websocket连接即可。
 
->  web/html  是普通版本index.html，未测试，仅供参考！
+>  web/html  是普通版本index.html，未测试，仅供参考！  
 
 
 ## demo
