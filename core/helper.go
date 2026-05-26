@@ -8,7 +8,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func jsonError(c *gin.Context, msg interface{}) {
+func jsonError(c *gin.Context, msg any) {
 	c.AbortWithStatusJSON(200, gin.H{"ok": false, "msg": msg})
 }
 

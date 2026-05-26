@@ -2,7 +2,6 @@ package core
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"time"
@@ -53,7 +52,7 @@ func publicKeySigner(kPath string) (ssh.Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("expand key path failed: %w", err)
 	}
-	key, err := ioutil.ReadFile(keyPath)
+	key, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("read key file failed: %w", err)
 	}
