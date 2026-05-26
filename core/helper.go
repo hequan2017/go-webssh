@@ -1,10 +1,11 @@
 package core
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
-	"time"
 )
 
 func jsonError(c *gin.Context, msg interface{}) {
@@ -13,7 +14,6 @@ func jsonError(c *gin.Context, msg interface{}) {
 
 func handleError(c *gin.Context, err error) bool {
 	if err != nil {
-		//logrus.WithError(err).Error("gin context http handler error")
 		jsonError(c, err.Error())
 		return true
 	}
@@ -22,10 +22,10 @@ func handleError(c *gin.Context, err error) bool {
 
 func wshandleError(ws *websocket.Conn, err error) bool {
 	if err != nil {
-		logrus.WithError(err).Error("handler ws ERROR:")
+		logrus.WithError(err).Error("websocket error")
 		dt := time.Now().Add(time.Second)
 		if err := ws.WriteControl(websocket.CloseMessage, []byte(err.Error()), dt); err != nil {
-			logrus.WithError(err).Error("websocket writes control message failed:")
+			logrus.WithError(err).Error("websocket write control message failed")
 		}
 		return true
 	}

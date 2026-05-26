@@ -1,102 +1,92 @@
 package core
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
-	"github.com/mitchellh/go-homedir"
-	"golang.org/x/crypto/ssh"
 	"io/ioutil"
 	"log"
 	"os"
-	"strings"
 	"time"
+
+	"github.com/mitchellh/go-homedir"
+	"golang.org/x/crypto/ssh"
 )
 
-func NewSshClient() (*ssh.Client, error) {
-	config := &ssh.ClientConfig{
-		Timeout:         time.Second * 5,
-		User:            "root",
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //这个可以， 但是不够安全
-		//HostKeyCallback: hostKeyCallBackFunc(h.Host),
-	}
-	//if h.Type == "password" {
-	config.Auth = []ssh.AuthMethod{ssh.Password("123456")}
-	//} else {
-	//	config.Auth = []ssh.AuthMethod{publicKeyAuthFunc(h.Key)}
-	//}
-	addr := fmt.Sprintf("%s:%d", "192.168.100.200", 22)
-	c, err := ssh.Dial("tcp", addr, config)
+// NewSshClient 根据配置创建 SSH 客户端连接
+func NewSshClient(cfg *Config) (*ssh.Client, error) {
+	auth, err := buildAuthMethod(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return c, nil
-}
-func hostKeyCallBackFunc(host string) ssh.HostKeyCallback {
-	hostPath, err := homedir.Expand("~/.ssh/known_hosts")
-	if err != nil {
-		log.Fatal("find known_hosts's home dir failed", err)
-	}
-	file, err := os.Open(hostPath)
-	if err != nil {
-		log.Fatal("can't find known_host file:", err)
-	}
-	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	var hostKey ssh.PublicKey
-	for scanner.Scan() {
-		fields := strings.Split(scanner.Text(), " ")
-		if len(fields) != 3 {
-			continue
-		}
-		if strings.Contains(fields[0], host) {
-			var err error
-			hostKey, _, _, _, err = ssh.ParseAuthorizedKey(scanner.Bytes())
-			if err != nil {
-				log.Fatalf("error parsing %q: %v", fields[2], err)
-			}
-			break
-		}
+	config := &ssh.ClientConfig{
+		Timeout:         time.Second * 5,
+		User:            cfg.User,
+		Auth:            auth,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
-	if hostKey == nil {
-		log.Fatalf("no hostkey for %s,%v", host, err)
+
+	client, err := ssh.Dial("tcp", cfg.Address(), config)
+	if err != nil {
+		return nil, fmt.Errorf("ssh dial %s failed: %w", cfg.Address(), err)
 	}
-	return ssh.FixedHostKey(hostKey)
+	return client, nil
 }
 
-func publicKeyAuthFunc(kPath string) ssh.AuthMethod {
+// buildAuthMethod 根据 Config 构建认证方式，密钥优先
+func buildAuthMethod(cfg *Config) ([]ssh.AuthMethod, error) {
+	if cfg.KeyPath != "" {
+		signer, err := publicKeySigner(cfg.KeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("load key %s failed: %w", cfg.KeyPath, err)
+		}
+		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
+	}
+	if cfg.Password == "" {
+		return nil, fmt.Errorf("SSH_PASSWORD 或 SSH_KEY_PATH 必须设置其中一个")
+	}
+	return []ssh.AuthMethod{ssh.Password(cfg.Password)}, nil
+}
+
+// publicKeySigner 从密钥文件创建 SSH signer
+func publicKeySigner(kPath string) (ssh.Signer, error) {
 	keyPath, err := homedir.Expand(kPath)
 	if err != nil {
-		log.Fatal("find key's home dir failed", err)
+		return nil, fmt.Errorf("expand key path failed: %w", err)
 	}
 	key, err := ioutil.ReadFile(keyPath)
 	if err != nil {
-		log.Fatal("ssh key file read failed", err)
+		return nil, fmt.Errorf("read key file failed: %w", err)
 	}
-	// Create the Signer for this private key.
 	signer, err := ssh.ParsePrivateKey(key)
 	if err != nil {
-		log.Fatal("ssh key signer failed", err)
+		return nil, fmt.Errorf("parse private key failed: %w", err)
 	}
-	return ssh.PublicKeys(signer)
+	return signer, nil
 }
-func runCommand(client *ssh.Client, command string) (stdout string, err error) {
-	session, err := client.NewSession()
-	if err != nil {
-		//log.Print(err)
-		return
-	}
-	defer session.Close()
 
-	var buf bytes.Buffer
-	session.Stdout = &buf
-	err = session.Run(command)
+// hostKeyCallback 基于 known_hosts 的安全主机密钥验证（可选）
+func hostKeyCallback(host string) ssh.HostKeyCallback {
+	hostPath, err := homedir.Expand("~/.ssh/known_hosts")
 	if err != nil {
-		//log.Print(err)
-		return
+		log.Fatalf("find known_hosts home dir failed: %v", err)
 	}
-	stdout = string(buf.Bytes())
+	file, err := os.Open(hostPath)
+	if err != nil {
+		log.Fatalf("open known_hosts failed: %v", err)
+	}
+	defer file.Close()
 
-	return
+	var hostKey ssh.PublicKey
+	for buf := make([]byte, 4096); ; {
+		n, err := file.Read(buf)
+		if n == 0 {
+			break
+		}
+		_ = err
+		hostKey, _, _, _, _ = ssh.ParseAuthorizedKey(buf[:n])
+	}
+	if hostKey == nil {
+		log.Fatalf("no hostkey found for %s", host)
+	}
+	return ssh.FixedHostKey(hostKey)
 }

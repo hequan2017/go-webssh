@@ -1,7 +1,6 @@
 package core
 
 import (
-	"bytes"
 	"net/http"
 	"strconv"
 
@@ -18,24 +17,13 @@ var upGrader = websocket.Upgrader{
 	},
 }
 
-// handle webSocket connection.
-// first,we establish a ssh connection to ssh server when a webSocket comes;
-// then we deliver ssh data via ssh connection between browser and ssh server.
-// That is, read webSocket data from browser (e.g. 'ls' command) and send data to ssh server via ssh connection;
-// the other hand, read returned ssh data from ssh server and write back to browser via webSocket API.
+// WsSsh 处理 WebSocket 连接，建立 SSH 桥接
 func WsSsh(c *gin.Context) {
 	wsConn, err := upGrader.Upgrade(c.Writer, c.Request, nil)
 	if handleError(c, err) {
 		return
 	}
 	defer wsConn.Close()
-
-	//cIp := c.ClientIP()
-	//
-	//userM, err := getAuthUser(c)
-	//if handleError(c, err) {
-	//	return
-	//}
 
 	cols, err := strconv.Atoi(c.DefaultQuery("cols", "120"))
 	if wshandleError(wsConn, err) {
@@ -45,23 +33,14 @@ func WsSsh(c *gin.Context) {
 	if wshandleError(wsConn, err) {
 		return
 	}
-	//idx, err := parseParamID(c)
-	//if wshandleError(wsConn, err) {
-	//	return
-	//}
-	//mc, err := models.MachineFind(idx)
-	//if wshandleError(wsConn, err) {
-	//	return
-	//}
 
-	client, err := NewSshClient()
+	client, err := NewSshClient(AppConfig)
 	if wshandleError(wsConn, err) {
 		return
 	}
 	defer client.Close()
-	//startTime := time.Now()
-	ssConn, err := NewSshConn(cols, rows, client)
 
+	ssConn, err := NewSshConn(cols, rows, client)
 	if wshandleError(wsConn, err) {
 		return
 	}
@@ -69,31 +48,10 @@ func WsSsh(c *gin.Context) {
 
 	quitChan := make(chan bool, 3)
 
-	var logBuff = new(bytes.Buffer)
-
-	// most messages are ssh output, not webSocket input
-	go ssConn.ReceiveWsMsg(wsConn, logBuff, quitChan)
+	go ssConn.ReceiveWsMsg(wsConn, quitChan)
 	go ssConn.SendComboOutput(wsConn, quitChan)
 	go ssConn.SessionWait(quitChan)
 
 	<-quitChan
-	//write logs
-	//xtermLog := models.TermLog{
-	//	EndTime:     time.Now(),
-	//	StartTime:   startTime,
-	//	UserId:      userM.ID,
-	//	Log:         logBuff.String(),
-	//	MachineId:   idx,
-	//	MachineName: mc.Name,
-	//	MachineIp:   mc.Ip,
-	//	MachineHost: mc.Host,
-	//	UserName:    userM.Username,
-	//	Ip:          cIp,
-	//}
-	//
-	//err = xtermLog.Create()
-	//if wshandleError(wsConn, err) {
-	//	return
-	//}
 	logrus.Info("websocket finished")
 }

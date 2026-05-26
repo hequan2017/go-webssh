@@ -1,63 +1,66 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title> go  webssh 例子</title>
-
-
+    <title>WebSSH</title>
     <link href="/static/css/xterm.min.css" rel="stylesheet" type="text/css"/>
     <style>
         body {
-            padding-bottom: 30px;
+            margin: 0;
+            padding: 0;
+            background: #000;
         }
-
         .terminal {
-            border: #000 solid 5px;
-            font-family: cursive;
-            font-size: 15px;
+            height: 100vh;
         }
-
-        .reverse-video {
-            color: #000;
-            background: #f0f0f0;
-        }
-
     </style>
 </head>
 <body>
-
-<div id="terms"></div>
-</body>
-
+<div id="terminal"></div>
 <script src="/static/js/xterm.min.js"></script>
 <script>
-    var socket = new WebSocket('ws://' + window.location.host + '/ws/1');
+    var cols = 120, rows = 32;
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('cols')) cols = parseInt(params.get('cols'));
+    if (params.get('rows')) rows = parseInt(params.get('rows'));
 
-    socket.onopen = function () {
+    var term = new Terminal({cursorBlink: true, cols: cols, rows: rows});
+    term.open(document.getElementById('terminal'));
 
-        var term = new Terminal();
-        term.open(document.getElementById('terms'));
+    var socket = new WebSocket(
+        (location.protocol === 'https:' ? 'wss://' : 'ws://') +
+        window.location.host + '/ws/1?cols=' + cols + '&rows=' + rows
+    );
 
-        term.on('data', function (data) {
-            console.log(data);
-            socket.send(data);
-        });
+    term.on('data', function (data) {
+        socket.send(data);
+    });
 
-        socket.onmessage = function (msg) {
-            console.log(msg);
-            console.log(msg.data);
-            term.write(msg.data);
-        };
-        socket.onerror = function (e) {
-            console.log(e);
-        };
-
-        socket.onclose = function (e) {
-            console.log(e);
-            term.destroy();
-        };
+    socket.onmessage = function (msg) {
+        term.write(msg.data);
     };
 
-</script>
+    socket.onerror = function (e) {
+        console.error('WebSocket error:', e);
+    };
 
+    socket.onclose = function (e) {
+        term.writeln('\r\n\x1b[31m连接已关闭\x1b[0m');
+    };
+
+    window.addEventListener('resize', function () {
+        // 简易 resize：获取终端可见行列数并通知后端
+        if (term.proposeGeometry) {
+            var geometry = term.proposeGeometry();
+            if (geometry) {
+                socket.send(JSON.stringify({
+                    type: 'resize',
+                    cols: geometry.cols,
+                    rows: geometry.rows
+                }));
+            }
+        }
+    });
+</script>
+</body>
 </html>

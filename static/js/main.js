@@ -1,87 +1,60 @@
+jQuery(function ($) {
 
-jQuery(function($){
+    var status = $('#status');
 
-  var status = $('#status');
-      // btn = $('.btn-primary');
+    $('form#connect').submit(function (event) {
+        event.preventDefault();
 
-  $('form#connect').submit(function(event) {
-      event.preventDefault();
+        var form = $(this),
+            url = form.attr('action'),
+            type = form.attr('type');
 
-      var form = $(this),
-          url = form.attr('action'),
-          type = form.attr('type');
-          // data = new FormData(this);
+        var hostname = form.find('input[name="hostname"]').val();
+        var port = form.find('input[name="port"]').val() || '22';
+        var username = form.find('input[name="username"]').val();
+        var password = form.find('input[name="password"]').val();
 
-      // var pk = data.get('privatekey');
-      // if (pk && pk.size > 16384) {
-      //   status.text('Key size exceeds maximum value.');
-      //   return;
-      // }
-
-      // status.text('');
-      // btn.prop('disabled', true);
-
-      $.ajax({
-          url: url,
-          type: type,
-          data: {hostname:'42.62.55.58',port:22,username:'root',password:'123456'},
-          success: callback
-          // cache: false,
-          // contentType: false,
-          // processData: false
-      });
-
-  });
-
-
-
-  function callback(msg) {
-    console.log(msg);
-    if (msg.status) {
-      status.text(msg.status);
-      // setTimeout(function(){
-      //   btn.prop('disabled', false);
-      // }, 3000);
-      // return;
-    }
-
-    var ws_url = window.location.href.replace('http', 'ws'),
-        // join = (ws_url[ws_url.length-1] == '/' ? '' : '/'),
-
-        url = "ws://127.0.0.1:8005/" + 'ws?id=' + msg.id,
-// url = ws_url + join + 'ws?id=' + msg.id,
-
-        socket = new WebSocket(url),
-        terminal = document.getElementById('#terminal'),
-        term = new Terminal({cursorBlink: true});
-    // alert(ws_url)
-    console.log(url);
-    term.on('data', function(data) {
-      // console.log(data);
-      socket.send(data);
+        $.ajax({
+            url: url,
+            type: type,
+            data: {hostname: hostname, port: port, username: username, password: password},
+            success: callback
+        });
     });
 
-    socket.onopen = function(e) {
-      $('.container').hide();
-      term.open(terminal, true);
-      term.toggleFullscreen(true);
-    };
+    function callback(msg) {
+        console.log(msg);
+        if (msg.status) {
+            status.text(msg.status);
+            return;
+        }
 
-    socket.onmessage = function(msg) {
-      // console.log(msg);
-      term.write(msg.data);
-    };
+        var wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        var url = wsProtocol + window.location.host + '/ws?id=' + msg.id,
+            socket = new WebSocket(url),
+            terminal = document.getElementById('#terminal'),
+            term = new Terminal({cursorBlink: true});
 
-    socket.onerror = function(e) {
-      console.log(e);
-    };
+        term.on('data', function (data) {
+            socket.send(data);
+        });
 
-    socket.onclose = function(e) {
-      console.log(e);
-      term.destroy();
-      $('.container').show();
-      // status.text(e.reason);
-      // btn.prop('disabled', false);
-    };
-  }
+        socket.onopen = function () {
+            $('.container').hide();
+            term.open(terminal, true);
+        };
+
+        socket.onmessage = function (msg) {
+            term.write(msg.data);
+        };
+
+        socket.onerror = function (e) {
+            console.error(e);
+        };
+
+        socket.onclose = function () {
+            term.destroy();
+            $('.container').show();
+        };
+    }
 });
