@@ -1,88 +1,56 @@
 package core
 
 import (
-	"errors"
-	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
-
-	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 )
 
-func init() {
-	gin.SetMode(gin.TestMode)
-}
+func TestPositiveInt(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		fallback int
+		want     int
+		wantErr  bool
+	}{
+		{name: "默认值", value: "", fallback: 120, want: 120},
+		{name: "有效值", value: "80", fallback: 120, want: 80},
+		{name: "非数字", value: "abc", fallback: 120, wantErr: true},
+		{name: "零", value: "0", fallback: 120, wantErr: true},
+		{name: "过大", value: "1001", fallback: 120, wantErr: true},
+	}
 
-func TestHandleError_Nil(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	if handleError(c, nil) != false {
-		t.Error("handleError(nil) should return false")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := positiveInt(tt.value, tt.fallback)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("positiveInt() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("positiveInt() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestHandleError_WithErr(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("GET", "/", nil)
-
-	result := handleError(c, errors.New("test error"))
-	if result != true {
-		t.Error("handleError(err) should return true")
+func TestSameOrigin(t *testing.T) {
+	tests := []struct {
+		name   string
+		origin string
+		want   bool
+	}{
+		{name: "无 Origin", want: true},
+		{name: "同源", origin: "http://example.com", want: true},
+		{name: "跨域", origin: "https://other.example", want: false},
 	}
-	if w.Code != 200 {
-		t.Errorf("status = %d, want 200", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, "test error") {
-		t.Errorf("body = %q, should contain 'test error'", body)
-	}
-	if !strings.Contains(body, `"ok":false`) {
-		t.Errorf("body = %q, should contain ok:false", body)
-	}
-}
 
-func TestWshandleError_Nil(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upgrader := websocket.Upgrader{}
-		ws, _ := upgrader.Upgrade(w, r, nil)
-		defer ws.Close()
-	}))
-	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ws.Close()
-
-	if wshandleError(ws, nil) != false {
-		t.Error("wshandleError(nil) should return false")
-	}
-}
-
-func TestWshandleError_WithErr(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upgrader := websocket.Upgrader{}
-		ws, _ := upgrader.Upgrade(w, r, nil)
-		defer ws.Close()
-		// 读取客户端发来的 close 消息
-		ws.ReadMessage()
-	}))
-	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ws.Close()
-
-	result := wshandleError(ws, errors.New("ws test error"))
-	if result != true {
-		t.Error("wshandleError(err) should return true")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://example.com/ws/default", nil)
+			req.Header.Set("Origin", tt.origin)
+			if got := sameOrigin(req); got != tt.want {
+				t.Fatalf("sameOrigin() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

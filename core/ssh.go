@@ -2,90 +2,72 @@ package core
 
 import (
 	"fmt"
-	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/mitchellh/go-homedir"
 	"golang.org/x/crypto/ssh"
 )
 
-// NewSshClient 根据配置创建 SSH 客户端连接
 func NewSshClient(cfg *Config) (*ssh.Client, error) {
 	auth, err := buildAuthMethod(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	config := &ssh.ClientConfig{
-		Timeout:         time.Second * 5,
+	client, err := ssh.Dial("tcp", cfg.Address(), &ssh.ClientConfig{
 		User:            cfg.User,
 		Auth:            auth,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	}
-
-	client, err := ssh.Dial("tcp", cfg.Address(), config)
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 兼容原项目行为，生产环境建议放在可信网络或反向代理之后。
+		Timeout:         8 * time.Second,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("ssh dial %s failed: %w", cfg.Address(), err)
+		return nil, fmt.Errorf("连接 SSH 主机 %s 失败: %w", cfg.Address(), err)
 	}
 	return client, nil
 }
 
-// buildAuthMethod 根据 Config 构建认证方式，密钥优先
 func buildAuthMethod(cfg *Config) ([]ssh.AuthMethod, error) {
 	if cfg.KeyPath != "" {
 		signer, err := publicKeySigner(cfg.KeyPath)
 		if err != nil {
-			return nil, fmt.Errorf("load key %s failed: %w", cfg.KeyPath, err)
+			return nil, fmt.Errorf("加载 SSH 私钥失败: %w", err)
 		}
 		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
 	}
 	if cfg.Password == "" {
-		return nil, fmt.Errorf("SSH_PASSWORD 或 SSH_KEY_PATH 必须设置其中一个")
+		return nil, fmt.Errorf("必须设置 SSH_PASSWORD 或 SSH_KEY_PATH")
 	}
 	return []ssh.AuthMethod{ssh.Password(cfg.Password)}, nil
 }
 
-// publicKeySigner 从密钥文件创建 SSH signer
-func publicKeySigner(kPath string) (ssh.Signer, error) {
-	keyPath, err := homedir.Expand(kPath)
+func publicKeySigner(path string) (ssh.Signer, error) {
+	expanded, err := expandHome(path)
 	if err != nil {
-		return nil, fmt.Errorf("expand key path failed: %w", err)
+		return nil, err
 	}
-	key, err := os.ReadFile(keyPath)
+	key, err := os.ReadFile(expanded)
 	if err != nil {
-		return nil, fmt.Errorf("read key file failed: %w", err)
+		return nil, fmt.Errorf("读取私钥 %q 失败: %w", expanded, err)
 	}
 	signer, err := ssh.ParsePrivateKey(key)
 	if err != nil {
-		return nil, fmt.Errorf("parse private key failed: %w", err)
+		return nil, fmt.Errorf("解析私钥 %q 失败: %w", expanded, err)
 	}
 	return signer, nil
 }
 
-// hostKeyCallback 基于 known_hosts 的安全主机密钥验证（可选）
-func hostKeyCallback(host string) ssh.HostKeyCallback {
-	hostPath, err := homedir.Expand("~/.ssh/known_hosts")
+func expandHome(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, `~\`) {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
 	if err != nil {
-		log.Fatalf("find known_hosts home dir failed: %v", err)
+		return "", fmt.Errorf("获取用户目录失败: %w", err)
 	}
-	file, err := os.Open(hostPath)
-	if err != nil {
-		log.Fatalf("open known_hosts failed: %v", err)
+	if path == "~" {
+		return home, nil
 	}
-	defer file.Close()
-
-	var hostKey ssh.PublicKey
-	for buf := make([]byte, 4096); ; {
-		n, err := file.Read(buf)
-		if n == 0 {
-			break
-		}
-		_ = err
-		hostKey, _, _, _, _ = ssh.ParseAuthorizedKey(buf[:n])
-	}
-	if hostKey == nil {
-		log.Fatalf("no hostkey found for %s", host)
-	}
-	return ssh.FixedHostKey(hostKey)
+	return filepath.Join(home, path[2:]), nil
 }

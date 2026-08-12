@@ -1,35 +1,20 @@
 package core
 
 import (
-	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
-	"io"
 )
-
-// wsBufferWriter 线程安全的 buffer，用于收集 SSH 输出
-type wsBufferWriter struct {
-	buffer bytes.Buffer
-	mu     sync.Mutex
-}
-
-func (w *wsBufferWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buffer.Write(p)
-}
 
 const (
 	wsMsgCmd    = "cmd"
 	wsMsgResize = "resize"
 )
 
-// wsMsg WebSocket 消息格式
 type wsMsg struct {
 	Type string `json:"type"`
 	Cmd  string `json:"cmd"`
@@ -37,129 +22,97 @@ type wsMsg struct {
 	Rows int    `json:"rows"`
 }
 
-// SshConn 管理 SSH 会话的输入输出
+type outputWriter struct {
+	ch   chan<- []byte
+	done <-chan struct{}
+}
+
+func (w outputWriter) Write(data []byte) (int, error) {
+	copyOfData := append([]byte(nil), data...)
+	select {
+	case w.ch <- copyOfData:
+		return len(data), nil
+	case <-w.done:
+		return 0, io.ErrClosedPipe
+	}
+}
+
 type SshConn struct {
-	StdinPipe   io.WriteCloser
-	ComboOutput *wsBufferWriter
-	Session     *ssh.Session
+	StdinPipe io.WriteCloser
+	Session   *ssh.Session
+	Output    <-chan []byte
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
-// flushComboOutput 将 SSH 输出发送到 WebSocket
-func flushComboOutput(w *wsBufferWriter, wsConn *websocket.Conn) error {
-	if w.buffer.Len() != 0 {
-		err := wsConn.WriteMessage(websocket.TextMessage, w.buffer.Bytes())
-		if err != nil {
-			return err
-		}
-		w.buffer.Reset()
-	}
-	return nil
-}
-
-// NewSshConn 创建 SSH shell 会话
-func NewSshConn(cols, rows int, sshClient *ssh.Client) (*SshConn, error) {
-	sshSession, err := sshClient.NewSession()
+func NewSshConn(cols, rows int, client *ssh.Client) (*SshConn, error) {
+	session, err := client.NewSession()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("创建 SSH 会话失败: %w", err)
 	}
 
-	stdinP, err := sshSession.StdinPipe()
+	stdin, err := session.StdinPipe()
 	if err != nil {
-		return nil, err
+		session.Close()
+		return nil, fmt.Errorf("创建 SSH 输入流失败: %w", err)
 	}
 
-	comboWriter := new(wsBufferWriter)
-	sshSession.Stdout = comboWriter
-	sshSession.Stderr = comboWriter
+	output := make(chan []byte, 32)
+	done := make(chan struct{})
+	writer := outputWriter{ch: output, done: done}
+	session.Stdout = writer
+	session.Stderr = writer
 
 	modes := ssh.TerminalModes{
 		ssh.ECHO:          1,
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
-	if err := sshSession.RequestPty("xterm", rows, cols, modes); err != nil {
-		return nil, err
+	if err := session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
+		session.Close()
+		return nil, fmt.Errorf("申请终端失败: %w", err)
 	}
-	if err := sshSession.Shell(); err != nil {
-		return nil, err
+	if err := session.Shell(); err != nil {
+		session.Close()
+		return nil, fmt.Errorf("启动 shell 失败: %w", err)
 	}
-	return &SshConn{StdinPipe: stdinP, ComboOutput: comboWriter, Session: sshSession}, nil
+
+	return &SshConn{StdinPipe: stdin, Session: session, Output: output, done: done}, nil
 }
 
-func (s *SshConn) Close() {
-	if s.Session != nil {
-		s.Session.Close()
-	}
-}
-
-// ReceiveWsMsg 从 WebSocket 读取消息，区分命令和 resize
-func (ssConn *SshConn) ReceiveWsMsg(wsConn *websocket.Conn, exitCh chan bool) {
-	defer setQuit(exitCh)
+func (c *SshConn) ReadWebSocket(ws *websocket.Conn) error {
 	for {
-		select {
-		case <-exitCh:
-			return
-		default:
-			_, wsData, err := wsConn.ReadMessage()
-			if err != nil {
-				logrus.WithError(err).Error("reading webSocket message failed")
-				return
-			}
+		_, data, err := ws.ReadMessage()
+		if err != nil {
+			return err
+		}
 
-			// 尝试解析为 JSON（resize 消息），否则作为原始命令处理
-			var msg wsMsg
-			if json.Unmarshal(wsData, &msg) == nil && (msg.Type == wsMsgResize || msg.Type == wsMsgCmd) {
-				switch msg.Type {
-				case wsMsgResize:
-					if msg.Cols > 0 && msg.Rows > 0 {
-						if err := ssConn.Session.WindowChange(msg.Rows, msg.Cols); err != nil {
-							logrus.WithError(err).Error("ssh pty resize failed")
-						}
-					}
-				case wsMsgCmd:
-					if _, err := ssConn.StdinPipe.Write([]byte(msg.Cmd)); err != nil {
-						logrus.WithError(err).Error("ws cmd write to ssh.stdin failed")
+		var message wsMsg
+		if json.Unmarshal(data, &message) == nil {
+			switch message.Type {
+			case wsMsgResize:
+				if message.Cols > 0 && message.Rows > 0 {
+					if err := c.Session.WindowChange(message.Rows, message.Cols); err != nil {
+						return fmt.Errorf("调整终端尺寸失败: %w", err)
 					}
 				}
-			} else {
-				// 原始终端输入，直接写入 SSH stdin
-				if _, err := ssConn.StdinPipe.Write(wsData); err != nil {
-					logrus.WithError(err).Error("ws data write to ssh.stdin failed")
-				}
+				continue
+			case wsMsgCmd:
+				data = []byte(message.Cmd)
 			}
+		}
+
+		if _, err := c.StdinPipe.Write(data); err != nil {
+			return fmt.Errorf("写入 SSH 终端失败: %w", err)
 		}
 	}
 }
 
-// SendComboOutput 每 120ms 将 SSH 输出发送到 WebSocket
-func (ssConn *SshConn) SendComboOutput(wsConn *websocket.Conn, exitCh chan bool) {
-	defer setQuit(exitCh)
-	tick := time.NewTicker(120 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		select {
-		case <-tick.C:
-			if err := flushComboOutput(ssConn.ComboOutput, wsConn); err != nil {
-				logrus.WithError(err).Error("ssh output send to websocket failed")
-				return
-			}
-		case <-exitCh:
-			return
-		}
-	}
-}
-
-// SessionWait 等待 SSH 会话结束
-func (ssConn *SshConn) SessionWait(quitChan chan bool) {
-	if err := ssConn.Session.Wait(); err != nil {
-		logrus.WithError(err).Error("ssh session wait failed")
-	}
-	setQuit(quitChan)
-}
-
-func setQuit(ch chan bool) {
-	select {
-	case ch <- true:
-	default:
-	}
+func (c *SshConn) Close() error {
+	var err error
+	c.closeOnce.Do(func() {
+		close(c.done)
+		err = c.Session.Close()
+	})
+	return err
 }

@@ -1,66 +1,77 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <title>WebSSH</title>
-    <link href="/static/css/xterm.min.css" rel="stylesheet" type="text/css"/>
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            background: #000;
-        }
-        .terminal {
-            height: 100vh;
-        }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>go-webssh</title>
+  <link rel="icon" href="/static/img/favicon.png">
+  <link rel="stylesheet" href="/static/css/xterm.min.css">
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #080b12; color: #e5e7eb; }
+    .app { height: 100vh; padding: 18px; display: grid; grid-template-rows: auto 1fr; gap: 12px; }
+    .bar { display: flex; align-items: center; justify-content: space-between; min-width: 0; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: .01em; }
+    .mark { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 18px #22c55e80; }
+    .status { display: flex; align-items: center; gap: 8px; color: #94a3b8; font-size: 13px; }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #f59e0b; }
+    .status[data-state="online"] .status-dot { background: #22c55e; }
+    .status[data-state="offline"] .status-dot { background: #ef4444; }
+    .shell { min-height: 0; overflow: hidden; border: 1px solid #1e293b; border-radius: 12px; background: #05070b; box-shadow: 0 18px 50px #0008; }
+    #terminal { height: 100%; padding: 14px; }
+    .terminal { height: 100%; }
+    @media (max-width: 640px) { .app { padding: 10px; } .shell { border-radius: 9px; } #terminal { padding: 10px; } }
+  </style>
 </head>
 <body>
-<div id="terminal"></div>
-<script src="/static/js/xterm.min.js"></script>
-<script>
-    var cols = 120, rows = 32;
-    var params = new URLSearchParams(window.location.search);
-    if (params.get('cols')) cols = parseInt(params.get('cols'));
-    if (params.get('rows')) rows = parseInt(params.get('rows'));
+  <main class="app">
+    <header class="bar">
+      <div class="brand"><span class="mark"></span><span>go-webssh</span></div>
+      <div id="status" class="status" data-state="connecting"><span class="status-dot"></span><span>正在连接</span></div>
+    </header>
+    <section class="shell" aria-label="SSH 终端"><div id="terminal"></div></section>
+  </main>
+  <script src="/static/js/xterm.min.js"></script>
+  <script>
+    (() => {
+      const status = document.querySelector('#status');
+      const terminalRoot = document.querySelector('#terminal');
+      const term = new Terminal({ cursorBlink: true, convertEol: true, fontSize: 14, fontFamily: 'Cascadia Code, Consolas, monospace', theme: { background: '#05070b', foreground: '#d8dee9', cursor: '#22c55e' } });
+      term.open(terminalRoot);
 
-    var term = new Terminal({cursorBlink: true, cols: cols, rows: rows});
-    term.open(document.getElementById('terminal'));
+      const dimensions = () => ({
+        cols: Math.max(20, Math.floor((terminalRoot.clientWidth - 28) / 8.4)),
+        rows: Math.max(5, Math.floor((terminalRoot.clientHeight - 28) / 17))
+      });
+      const size = dimensions();
+      term.resize(size.cols, size.rows);
 
-    var socket = new WebSocket(
-        (location.protocol === 'https:' ? 'wss://' : 'ws://') +
-        window.location.host + '/ws/1?cols=' + cols + '&rows=' + rows
-    );
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const socket = new WebSocket(`${protocol}//${location.host}/ws/default?cols=${size.cols}&rows=${size.rows}`);
+      socket.binaryType = 'arraybuffer';
 
-    term.on('data', function (data) {
-        socket.send(data);
-    });
+      const setStatus = (state, text) => { status.dataset.state = state; status.lastElementChild.textContent = text; };
+      term.on('data', data => { if (socket.readyState === WebSocket.OPEN) socket.send(data); });
+      socket.addEventListener('open', () => setStatus('online', '已连接'));
+      socket.addEventListener('message', event => term.write(event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : event.data));
+      socket.addEventListener('error', () => setStatus('offline', '连接异常'));
+      socket.addEventListener('close', event => {
+        setStatus('offline', '连接已关闭');
+        const reason = event.reason ? `：${event.reason}` : '';
+        term.writeln(`\r\n\x1b[31mSSH 连接已关闭${reason}\x1b[0m`);
+      });
 
-    socket.onmessage = function (msg) {
-        term.write(msg.data);
-    };
-
-    socket.onerror = function (e) {
-        console.error('WebSocket error:', e);
-    };
-
-    socket.onclose = function (e) {
-        term.writeln('\r\n\x1b[31m连接已关闭\x1b[0m');
-    };
-
-    window.addEventListener('resize', function () {
-        // 简易 resize：获取终端可见行列数并通知后端
-        if (term.proposeGeometry) {
-            var geometry = term.proposeGeometry();
-            if (geometry) {
-                socket.send(JSON.stringify({
-                    type: 'resize',
-                    cols: geometry.cols,
-                    rows: geometry.rows
-                }));
-            }
-        }
-    });
-</script>
+      let resizeTimer;
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          const next = dimensions();
+          term.resize(next.cols, next.rows);
+          if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', cols: next.cols, rows: next.rows }));
+        }, 100);
+      });
+    })();
+  </script>
 </body>
 </html>

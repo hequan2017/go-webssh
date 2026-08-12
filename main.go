@@ -1,61 +1,52 @@
 package main
 
 import (
+	"context"
+	"embed"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"strings"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/hequan2017/go-webssh/core"
 )
 
-// Cors 跨域中间件
-func Cors() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		method := c.Request.Method
-		origin := c.Request.Header.Get("Origin")
-
-		var headerKeys []string
-		for k := range c.Request.Header {
-			headerKeys = append(headerKeys, k)
-		}
-		headerStr := strings.Join(headerKeys, ", ")
-		if headerStr != "" {
-			headerStr = fmt.Sprintf("access-control-allow-origin, access-control-allow-headers, %s", headerStr)
-		} else {
-			headerStr = "access-control-allow-origin, access-control-allow-headers"
-		}
-
-		if origin != "" {
-			c.Header("Access-Control-Allow-Origin", "*")
-			c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE, UPDATE")
-			c.Header("Access-Control-Allow-Headers", headerStr)
-			c.Header("Access-Control-Expose-Headers", "Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers, Cache-Control, Content-Type")
-			c.Header("Access-Control-Max-Age", "172800")
-			c.Header("Access-Control-Allow-Credentials", "false")
-			c.Set("content-type", "application/json")
-		}
-
-		if method == "OPTIONS" {
-			c.JSON(http.StatusOK, "Options Request!")
-		}
-		c.Next()
-	}
-}
+//go:embed web/html/index.html static
+var assets embed.FS
 
 func main() {
-	core.AppConfig = core.LoadConfig()
+	cfg := core.LoadConfig()
+	if err := cfg.Validate(); err != nil {
+		slog.Error("配置无效", "error", err)
+		os.Exit(1)
+	}
 
-	r := gin.Default()
-	r.Use(Cors())
-	r.Static("/static", "./static")
-	r.LoadHTMLGlob("web/html/*")
-	r.GET("/", func(c *gin.Context) {
-		c.HTML(http.StatusOK, "index.html", nil)
-	})
-	r.GET("/ws/:id", core.WsSsh)
+	server := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           core.NewHandler(cfg, assets),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
-	fmt.Printf("go-webssh starting on %s\n", core.AppConfig.Addr)
-	fmt.Printf("SSH target: %s@%s:%d\n", core.AppConfig.User, core.AppConfig.Host, core.AppConfig.Port)
-	_ = r.Run(core.AppConfig.Addr)
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		slog.Info("go-webssh 已启动", "listen", cfg.Addr, "target", cfg.Target())
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("HTTP 服务异常退出", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-stop
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "关闭服务失败: %v\n", err)
+	}
 }

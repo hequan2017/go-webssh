@@ -87,6 +87,26 @@ func TestConfig_Address(t *testing.T) {
 	}
 }
 
+func TestConfig_AddressIPv6(t *testing.T) {
+	cfg := &Config{Host: "::1", Port: 22}
+	if got := cfg.Address(); got != "[::1]:22" {
+		t.Fatalf("Address() = %q, want %q", got, "[::1]:22")
+	}
+}
+
+func TestConfigValidate(t *testing.T) {
+	valid := &Config{Host: "127.0.0.1", Port: 22, User: "root", Addr: ":8080"}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	invalid := *valid
+	invalid.Port = 0
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("Validate() should reject port 0")
+	}
+}
+
 func TestGetEnv_Fallback(t *testing.T) {
 	os.Unsetenv("_TEST_WEBSSH_X")
 	if got := getEnv("_TEST_WEBSSH_X", "fallback"); got != "fallback" {
