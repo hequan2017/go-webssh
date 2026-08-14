@@ -1,0 +1,162 @@
+package core
+
+import (
+	"strings"
+	"testing"
+	"testing/fstest"
+	"time"
+)
+
+func jumpTestApp(t *testing.T) *Application {
+	t.Helper()
+	assetsFS := fstest.MapFS{
+		"web/html/index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>bastion</title>")},
+		"static/app.css":      &fstest.MapFile{Data: []byte("body{}")},
+	}
+	app, err := NewApplication(testConfig(t), assetsFS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return app
+}
+
+func seedCredential(t *testing.T, app *Application) string {
+	t.Helper()
+	credential, err := app.store.SaveCredential(Credential{Name: "jump-test", Type: CredentialPassword}, []byte("secret"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return credential.ID
+}
+
+func seedAsset(t *testing.T, app *Application, name, group, jumpID, credentialID string) Asset {
+	t.Helper()
+	asset, err := app.store.SaveAsset(Asset{
+		Name: name, Host: "10.0.0.10", Port: 22, Username: "ops", CredentialID: credentialID,
+		JumpAssetID: jumpID, Group: group, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("SaveAsset(%s) error = %v", name, err)
+	}
+	return asset
+}
+
+func TestSaveAssetJumpValidation(t *testing.T) {
+	app := jumpTestApp(t)
+	credentialID := seedCredential(t, app)
+
+	_, err := app.store.SaveAsset(Asset{Name: "孤儿", Host: "10.0.0.1", Port: 22, Username: "ops", CredentialID: credentialID, JumpAssetID: "missing", Group: "prod", Enabled: true})
+	if err == nil || !strings.Contains(err.Error(), "跳板机资产不存在") {
+		t.Fatalf("missing jump error = %v", err)
+	}
+
+	base := seedAsset(t, app, "跳板A", "jumps", "", credentialID)
+
+	self, err := app.store.SaveAsset(Asset{ID: base.ID, Name: base.Name, Host: base.Host, Port: 22, Username: "ops", CredentialID: credentialID, JumpAssetID: base.ID, Group: "jumps", Enabled: true})
+	_ = self
+	if err == nil || !strings.Contains(err.Error(), "自身") {
+		t.Fatalf("self jump error = %v", err)
+	}
+
+	b := seedAsset(t, app, "目标B", "prod", base.ID, credentialID)
+	if _, err := app.store.SaveAsset(Asset{ID: base.ID, Name: base.Name, Host: base.Host, Port: 22, Username: "ops", CredentialID: credentialID, JumpAssetID: b.ID, Group: "jumps", Enabled: true}); err == nil || !strings.Contains(err.Error(), "循环") {
+		t.Fatalf("cycle error = %v", err)
+	}
+
+	// 链长 MaxJumpHops 合法，再多一跳必须拒绝。
+	previous := ""
+	for i := 0; i < MaxJumpHops+1; i++ {
+		previous = seedAsset(t, app, "链"+strings.Repeat("I", i+1), "chain", previous, credentialID).ID
+	}
+	if _, err := app.store.SaveAsset(Asset{Name: "超深", Host: "10.0.0.9", Port: 22, Username: "ops", CredentialID: credentialID, JumpAssetID: previous, Group: "chain", Enabled: true}); err == nil || !strings.Contains(err.Error(), "超过") {
+		t.Fatalf("depth error = %v", err)
+	}
+}
+
+func TestAssetSSHChainResolvesJumpOrderAndPermissions(t *testing.T) {
+	app := jumpTestApp(t)
+	credentialID := seedCredential(t, app)
+	jump := seedAsset(t, app, "跳板A", "jumps", "", credentialID)
+	target := seedAsset(t, app, "目标B", "prod", jump.ID, credentialID)
+
+	admin := User{Role: RoleAdmin}
+	chain, asset, hops, err := app.assetSSHChain(admin, target.ID)
+	if err != nil {
+		t.Fatalf("assetSSHChain() error = %v", err)
+	}
+	if len(chain) != 2 || chain[0].Host != jump.Host || chain[1].Host != target.Host {
+		t.Fatalf("chain order wrong: %#v", chain)
+	}
+	if len(hops) != 1 || hops[0].ID != jump.ID {
+		t.Fatalf("hops = %#v", hops)
+	}
+	if asset.ID != target.ID {
+		t.Fatalf("asset = %#v", asset)
+	}
+
+	operatorNoJumpAccess := User{Role: RoleOperator, AssetGroups: []string{"prod"}}
+	if _, _, _, err := app.assetSSHChain(operatorNoJumpAccess, target.ID); err == nil || !strings.Contains(err.Error(), "无权访问跳板机") {
+		t.Fatalf("operator without jump access error = %v", err)
+	}
+
+	operatorFull := User{Role: RoleOperator, AssetGroups: []string{"prod", "jumps"}}
+	if _, _, _, err := app.assetSSHChain(operatorFull, target.ID); err != nil {
+		t.Fatalf("operator with jump access error = %v", err)
+	}
+
+	auditor := User{Role: RoleAuditor, AssetGroups: []string{"*"}}
+	if _, _, _, err := app.assetSSHChain(auditor, target.ID); err == nil || !strings.Contains(err.Error(), "无权访问") {
+		t.Fatalf("auditor error = %v", err)
+	}
+}
+
+func TestAssetSSHChainDisabledJump(t *testing.T) {
+	app := jumpTestApp(t)
+	credentialID := seedCredential(t, app)
+	jump := seedAsset(t, app, "跳板A", "jumps", "", credentialID)
+	seedAsset(t, app, "目标B", "prod", jump.ID, credentialID)
+
+	disabled := jump
+	disabled.Enabled = false
+	if _, err := app.store.SaveAsset(disabled); err != nil {
+		t.Fatal(err)
+	}
+
+	admin := User{Role: RoleAdmin}
+	targets := app.store.Assets()
+	for _, asset := range targets {
+		if asset.ID == disabled.ID {
+			continue
+		}
+		if _, _, _, err := app.assetSSHChain(admin, asset.ID); err == nil || !strings.Contains(err.Error(), "已禁用") {
+			t.Fatalf("disabled jump error = %v", err)
+		}
+	}
+}
+
+func TestNewSshClientChainEmpty(t *testing.T) {
+	if _, err := NewSshClientChain(nil); err == nil {
+		t.Fatal("empty chain should fail")
+	}
+}
+
+func TestJumpNamesNilWhenEmpty(t *testing.T) {
+	if jumpNames(nil) != nil {
+		t.Fatal("jumpNames(nil) should be nil")
+	}
+	if got := jumpNames([]Asset{{Name: "a"}, {Name: "b"}}); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("jumpNames() = %v", got)
+	}
+}
+
+func TestSessionRecordJumpNamesPersisted(t *testing.T) {
+	app := jumpTestApp(t)
+	record := SessionRecord{ID: "s1", Username: "admin", AssetID: "a1", AssetName: "目标", JumpNames: []string{"跳板A"}, Status: "active", StartedAt: time.Now().UTC()}
+	if err := app.store.AddSession(record); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := app.store.Session("s1")
+	if err != nil || len(saved.JumpNames) != 1 || saved.JumpNames[0] != "跳板A" {
+		t.Fatalf("session jump names = %#v, %v", saved, err)
+	}
+}

@@ -42,7 +42,7 @@ type sshHooks struct {
 	OnOutput    func([]byte)
 }
 
-func serveSSHWebSocket(w http.ResponseWriter, r *http.Request, cfg *Config, hooks sshHooks) error {
+func serveSSHWebSocket(w http.ResponseWriter, r *http.Request, chain []*Config, hooks sshHooks) error {
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
@@ -70,7 +70,7 @@ func serveSSHWebSocket(w http.ResponseWriter, r *http.Request, cfg *Config, hook
 		return ws.SetReadDeadline(time.Now().Add(webSocketPongWait))
 	})
 
-	client, err := NewSshClient(cfg)
+	client, err := NewSshClientChain(chain)
 	if err != nil {
 		closeWebSocket(ws, err)
 		return err

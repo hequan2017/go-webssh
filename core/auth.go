@@ -12,7 +12,7 @@ import (
 )
 
 type activeSessionRegistry struct {
-	mu      sync.Mutex
+	mu       sync.Mutex
 	sessions map[string]activeSession
 }
 

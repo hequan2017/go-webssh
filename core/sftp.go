@@ -10,8 +10,8 @@ import (
 	"path"
 	"sort"
 	"strconv"
-	"time"
 	"strings"
+	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -36,26 +36,26 @@ type remoteFile struct {
 	IsDir   bool      `json:"is_dir"`
 }
 
-func (a *Application) sftpClient(r *http.Request) (*sftpConnection, Asset, error) {
+func (a *Application) sftpClient(r *http.Request) (*sftpConnection, Asset, []Asset, error) {
 	user, _ := requestUser(r)
-	cfg, asset, err := a.assetSSHConfig(user, r.PathValue("id"))
+	chain, asset, jumps, err := a.assetSSHChain(user, r.PathValue("id"))
 	if err != nil {
-		return nil, Asset{}, err
+		return nil, Asset{}, nil, err
 	}
-	sshClient, err := NewSshClient(cfg)
+	sshClient, err := NewSshClientChain(chain)
 	if err != nil {
-		return nil, Asset{}, err
+		return nil, Asset{}, nil, err
 	}
 	client, err := sftp.NewClient(sshClient)
 	if err != nil {
 		sshClient.Close()
-		return nil, Asset{}, err
+		return nil, Asset{}, nil, err
 	}
-	return &sftpConnection{Client: client, ssh: sshClient}, asset, nil
+	return &sftpConnection{Client: client, ssh: sshClient}, asset, jumps, nil
 }
 
 func (a *Application) listFiles(w http.ResponseWriter, r *http.Request) {
-	client, asset, err := a.sftpClient(r)
+	client, asset, jumps, err := a.sftpClient(r)
 	if err != nil {
 		writeAPIError(w, http.StatusBadGateway, err.Error())
 		return
@@ -80,7 +80,7 @@ func (a *Application) listFiles(w http.ResponseWriter, r *http.Request) {
 		}
 		return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name)
 	})
-	_ = a.store.AppendAudit(a.auditFor(r, "file.list", "asset", asset.ID, true, map[string]any{"path": remotePath}))
+	_ = a.store.AppendAudit(a.auditFor(r, "file.list", "asset", asset.ID, true, map[string]any{"path": remotePath, "jump_path": jumpNames(jumps)}))
 	writeJSON(w, http.StatusOK, map[string]any{"path": remotePath, "files": files})
 }
 
@@ -107,7 +107,7 @@ func (a *Application) createDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	remotePath := path.Join(path.Clean(input.Path), name)
-	client, asset, err := a.sftpClient(r)
+	client, asset, jumps, err := a.sftpClient(r)
 	if err != nil {
 		writeAPIError(w, http.StatusBadGateway, err.Error())
 		return
@@ -117,7 +117,7 @@ func (a *Application) createDirectory(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusConflict, "创建远程目录失败，目录可能已存在")
 		return
 	}
-	_ = a.store.AppendAudit(a.auditFor(r, "file.mkdir", "asset", asset.ID, true, map[string]any{"path": remotePath}))
+	_ = a.store.AppendAudit(a.auditFor(r, "file.mkdir", "asset", asset.ID, true, map[string]any{"path": remotePath, "jump_path": jumpNames(jumps)}))
 	writeJSON(w, http.StatusCreated, map[string]string{"path": remotePath})
 }
 
@@ -141,7 +141,7 @@ func (a *Application) renameFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	destination := path.Join(path.Dir(source), name)
-	client, asset, err := a.sftpClient(r)
+	client, asset, jumps, err := a.sftpClient(r)
 	if err != nil {
 		writeAPIError(w, http.StatusBadGateway, err.Error())
 		return
@@ -155,7 +155,7 @@ func (a *Application) renameFile(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadGateway, "重命名远程文件失败")
 		return
 	}
-	_ = a.store.AppendAudit(a.auditFor(r, "file.rename", "asset", asset.ID, true, map[string]any{"source": source, "destination": destination}))
+	_ = a.store.AppendAudit(a.auditFor(r, "file.rename", "asset", asset.ID, true, map[string]any{"source": source, "destination": destination, "jump_path": jumpNames(jumps)}))
 	writeJSON(w, http.StatusOK, map[string]string{"path": destination})
 }
 
@@ -165,7 +165,7 @@ func (a *Application) deleteFile(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "不能删除根目录")
 		return
 	}
-	client, asset, err := a.sftpClient(r)
+	client, asset, jumps, err := a.sftpClient(r)
 	if err != nil {
 		writeAPIError(w, http.StatusBadGateway, err.Error())
 		return
@@ -185,7 +185,7 @@ func (a *Application) deleteFile(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusConflict, "删除失败；目录必须为空且当前账号需要删除权限")
 		return
 	}
-	_ = a.store.AppendAudit(a.auditFor(r, "file.delete", "asset", asset.ID, true, map[string]any{"path": remotePath, "is_dir": info.IsDir()}))
+	_ = a.store.AppendAudit(a.auditFor(r, "file.delete", "asset", asset.ID, true, map[string]any{"path": remotePath, "is_dir": info.IsDir(), "jump_path": jumpNames(jumps)}))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -209,7 +209,7 @@ func (a *Application) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	remotePath := path.Join(directory, filename)
-	client, asset, err := a.sftpClient(r)
+	client, asset, jumps, err := a.sftpClient(r)
 	if err != nil {
 		writeAPIError(w, http.StatusBadGateway, err.Error())
 		return
@@ -227,7 +227,7 @@ func (a *Application) uploadFile(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "上传失败或文件超过大小限制")
 		return
 	}
-	_ = a.store.AppendAudit(a.auditFor(r, "file.upload", "asset", asset.ID, true, map[string]any{"path": remotePath, "size": written}))
+	_ = a.store.AppendAudit(a.auditFor(r, "file.upload", "asset", asset.ID, true, map[string]any{"path": remotePath, "size": written, "jump_path": jumpNames(jumps)}))
 	writeJSON(w, http.StatusCreated, map[string]any{"path": remotePath, "size": written})
 }
 
@@ -250,7 +250,7 @@ func (a *Application) downloadFile(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "下载路径无效")
 		return
 	}
-	client, asset, err := a.sftpClient(r)
+	client, asset, jumps, err := a.sftpClient(r)
 	if err != nil {
 		writeAPIError(w, http.StatusBadGateway, err.Error())
 		return
@@ -272,5 +272,5 @@ func (a *Application) downloadFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	w.WriteHeader(http.StatusOK)
 	_, copyErr := io.Copy(w, file)
-	_ = a.store.AppendAudit(a.auditFor(r, "file.download", "asset", asset.ID, copyErr == nil, map[string]any{"path": remotePath, "size": info.Size()}))
+	_ = a.store.AppendAudit(a.auditFor(r, "file.download", "asset", asset.ID, copyErr == nil, map[string]any{"path": remotePath, "size": info.Size(), "jump_path": jumpNames(jumps)}))
 }

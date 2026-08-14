@@ -220,6 +220,7 @@ func (s *Store) SaveAsset(asset Asset) (Asset, error) {
 	asset.Username = strings.TrimSpace(asset.Username)
 	asset.Group = strings.TrimSpace(asset.Group)
 	asset.HostKeyFingerprint = strings.TrimSpace(asset.HostKeyFingerprint)
+	asset.JumpAssetID = strings.TrimSpace(asset.JumpAssetID)
 	if err := validateAsset(asset); err != nil {
 		return Asset{}, err
 	}
@@ -228,6 +229,9 @@ func (s *Store) SaveAsset(asset Asset) (Asset, error) {
 	defer s.mu.Unlock()
 	if asset.CredentialID != "" && !s.credentialExistsLocked(asset.CredentialID) {
 		return Asset{}, fmt.Errorf("凭据不存在")
+	}
+	if err := s.validateJumpChainLocked(asset); err != nil {
+		return Asset{}, err
 	}
 	if asset.ID == "" {
 		var err error
@@ -387,6 +391,57 @@ func (s *Store) credentialExistsLocked(id string) bool {
 		}
 	}
 	return false
+}
+
+// validateJumpChainLocked 校验资产的跳板机引用存在且不形成循环、不超深度。保存时状态仍是旧数据，
+// 因此以待保存资产为起点沿已存储的 jump 引用前行，一旦回到该资产即判定为循环。
+func (s *Store) validateJumpChainLocked(asset Asset) error {
+	if asset.JumpAssetID == "" {
+		return nil
+	}
+	if asset.JumpAssetID == asset.ID {
+		return fmt.Errorf("资产不能以自身作为跳板机")
+	}
+	visited := map[string]bool{asset.ID: true}
+	count := 0
+	current := asset.JumpAssetID
+	for current != "" {
+		if count >= MaxJumpHops {
+			return fmt.Errorf("跳板链路不能超过 %d 层", MaxJumpHops)
+		}
+		if !s.assetExistsLocked(current) {
+			return fmt.Errorf("跳板机资产不存在")
+		}
+		count++
+		next := s.assetJumpIDLocked(current)
+		if next == "" {
+			return nil
+		}
+		if visited[next] {
+			return fmt.Errorf("跳板链路形成循环")
+		}
+		visited[next] = true
+		current = next
+	}
+	return nil
+}
+
+func (s *Store) assetExistsLocked(id string) bool {
+	for _, asset := range s.state.Assets {
+		if asset.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) assetJumpIDLocked(id string) string {
+	for _, asset := range s.state.Assets {
+		if asset.ID == id {
+			return asset.JumpAssetID
+		}
+	}
+	return ""
 }
 
 func (s *Store) DeleteCredential(id string) error {

@@ -39,6 +39,9 @@ func (u User) Public() PublicUser {
 	return PublicUser{ID: u.ID, Username: u.Username, Role: u.Role, AssetGroups: append([]string(nil), u.AssetGroups...), Enabled: u.Enabled, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
 }
 
+// MaxJumpHops 限定单个资产可级联的跳板机数量上限。
+const MaxJumpHops = 5
+
 type Asset struct {
 	ID                 string    `json:"id"`
 	Name               string    `json:"name"`
@@ -46,6 +49,7 @@ type Asset struct {
 	Port               int       `json:"port"`
 	Username           string    `json:"username"`
 	CredentialID       string    `json:"credential_id"`
+	JumpAssetID        string    `json:"jump_asset_id,omitempty"`
 	Group              string    `json:"group"`
 	Description        string    `json:"description"`
 	HostKeyFingerprint string    `json:"host_key_fingerprint"`
@@ -93,6 +97,7 @@ type SessionRecord struct {
 	Username      string     `json:"username"`
 	AssetID       string     `json:"asset_id"`
 	AssetName     string     `json:"asset_name"`
+	JumpNames     []string   `json:"jump_names,omitempty"`
 	ClientIP      string     `json:"client_ip"`
 	Status        string     `json:"status"`
 	RecordingPath string     `json:"recording_path,omitempty"`
