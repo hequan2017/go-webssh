@@ -1,10 +1,17 @@
 package core
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"io"
+	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 func jumpTestApp(t *testing.T) *Application {
@@ -140,6 +147,123 @@ func TestNewSshClientChainEmpty(t *testing.T) {
 	}
 }
 
+// startTestSSHServer 启动一个接受任意密码、只接受 session 通道的最小 SSH 服务器。
+func startTestSSHServer(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := &ssh.ServerConfig{PasswordCallback: func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) { return nil, nil }}
+	config.AddHostKey(signer)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				serverConn, chans, reqs, err := ssh.NewServerConn(conn, config)
+				if err != nil {
+					_ = conn.Close()
+					return
+				}
+				go ssh.DiscardRequests(reqs)
+				for newChan := range chans {
+					switch newChan.ChannelType() {
+					case "session":
+						_, channelReqs, err := newChan.Accept()
+						if err == nil {
+							go ssh.DiscardRequests(channelReqs)
+						}
+					case "direct-tcpip":
+						channel, channelReqs, err := newChan.Accept()
+						if err != nil {
+							continue
+						}
+						go ssh.DiscardRequests(channelReqs)
+						var forward struct {
+							Addr          string
+							Port          uint32
+							OriginAddress string
+							OriginPort    uint32
+						}
+						if err := ssh.Unmarshal(newChan.ExtraData(), &forward); err != nil {
+							_ = channel.Close()
+							continue
+						}
+						go proxyTCPIP(channel, net.JoinHostPort(forward.Addr, strconv.Itoa(int(forward.Port))))
+					default:
+						_ = newChan.Reject(ssh.UnknownChannelType, "unsupported")
+					}
+				}
+				_ = serverConn.Close()
+			}()
+		}
+	}()
+	return listener.Addr().String()
+}
+
+func TestNewSshClientChainMultiHopHandshake(t *testing.T) {
+	jumpAddr := startTestSSHServer(t)
+	targetAddr := startTestSSHServer(t)
+	jumpHost, jumpPort, _ := net.SplitHostPort(jumpAddr)
+	targetHost, targetPort, _ := net.SplitHostPort(targetAddr)
+	cfg := func(host, port string) *Config {
+		return &Config{Host: host, Port: mustAtoi(t, port), User: "ops", Password: "secret"}
+	}
+
+	client, err := NewSshClientChain([]*Config{cfg(jumpHost, jumpPort), cfg(targetHost, targetPort)})
+	if err != nil {
+		t.Fatalf("multi-hop chain error = %v", err)
+	}
+	defer client.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("session through jump error = %v", err)
+	}
+	_ = session.Close()
+
+	if _, err := NewSshClientChain([]*Config{cfg(jumpHost, jumpPort), cfg("127.0.0.1", "1")}); err == nil || !strings.Contains(err.Error(), "经过跳板机") {
+		t.Fatalf("second hop failure error = %v", err)
+	}
+}
+
+// proxyTCPIP 把 direct-tcpip 通道双向桥接到真实目标地址，等价于跳板机的端口转发行为。
+func proxyTCPIP(channel ssh.Channel, target string) {
+	defer channel.Close()
+	upstream, err := net.DialTimeout("tcp", target, 5*time.Second)
+	if err != nil {
+		return
+	}
+	defer upstream.Close()
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(channel, upstream); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(upstream, channel); done <- struct{}{} }()
+	<-done
+}
+
+func mustAtoi(t *testing.T, value string) int {
+	t.Helper()
+	port := 0
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			t.Fatalf("invalid port %q", value)
+		}
+		port = port*10 + int(char-'0')
+	}
+	return port
+}
+
 func TestJumpNamesNilWhenEmpty(t *testing.T) {
 	if jumpNames(nil) != nil {
 		t.Fatal("jumpNames(nil) should be nil")
@@ -158,5 +282,39 @@ func TestSessionRecordJumpNamesPersisted(t *testing.T) {
 	saved, err := app.store.Session("s1")
 	if err != nil || len(saved.JumpNames) != 1 || saved.JumpNames[0] != "跳板A" {
 		t.Fatalf("session jump names = %#v, %v", saved, err)
+	}
+}
+
+func TestDeleteUserRules(t *testing.T) {
+	app := jumpTestApp(t)
+	if _, err := app.store.CreateUser("operator3", "operator3-password-1", RoleOperator, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	users := app.store.Users()
+	admin := users[0]
+	var operator PublicUser
+	for _, user := range users {
+		if user.Username == "operator3" {
+			operator = user
+		}
+	}
+	if err := app.store.DeleteUser(admin.ID); err == nil || !strings.Contains(err.Error(), "最后一个") {
+		t.Fatalf("delete last admin error = %v", err)
+	}
+	if err := app.store.DeleteUser(operator.ID); err != nil {
+		t.Fatalf("delete operator error = %v", err)
+	}
+	if err := app.store.DeleteUser(operator.ID); err == nil {
+		t.Fatal("delete twice should fail")
+	}
+}
+
+func TestTouchLoginRecordsTime(t *testing.T) {
+	app := jumpTestApp(t)
+	users := app.store.Users()
+	app.store.TouchLogin(users[0].ID)
+	after := app.store.Users()[0]
+	if after.LastLoginAt == nil || after.LastLoginAt.IsZero() {
+		t.Fatal("last login time should be recorded")
 	}
 }

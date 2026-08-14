@@ -14,8 +14,9 @@ func TestBuildAuthMethod_Password(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildAuthMethod() error = %v", err)
 	}
-	if len(auth) != 1 {
-		t.Fatalf("len(auth) = %d, want 1", len(auth))
+	// 密码 + 键盘交互回退，兼容只接受 keyboard-interactive 的设备
+	if len(auth) != 2 {
+		t.Fatalf("len(auth) = %d, want 2", len(auth))
 	}
 }
 

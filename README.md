@@ -8,19 +8,35 @@
 
 [在线演示](https://hequan2017.github.io/go-webssh/)为只读静态控制台，不连接 SSH，也不会收集凭据。
 
+## 界面预览
+
+| 概览（深色） | 概览（浅色） |
+| --- | --- |
+| ![概览-深色](static/demo/dashboard-dark.png) | ![概览-浅色](static/demo/dashboard-light.png) |
+
+| 资产管理 | 用户与权限 |
+| --- | --- |
+| ![资产管理](static/demo/assets-light.png) | ![用户与权限](static/demo/users-light.png) |
+
+![会话记录](static/demo/sessions-light.png)
+
 ## 功能
 
 - 本地账号登录，HttpOnly/SameSite 会话 Cookie，登录失败限流
 - 三类角色：管理员、运维人员、审计员
+- 用户生命周期管理：随机初始密码开账号、最后登录时间、删除用户并即时吊销会话
 - 基于资产组的服务器访问授权
 - 多服务器资产管理和启用/禁用
 - 资产 SSH 握手与认证连通性测试（不执行远程命令）
-- 密码、普通私钥和带口令私钥登录
+- 网段自动发现：CIDR 并发探测开放 SSH 端口的设备并一键导入资产
+- 密码、普通私钥和带口令私钥登录；密码认证自动回退键盘交互（兼容交换机等设备）
+- 跳板机级联（ProxyJump）：资产可配置经另一资产中转，最多 5 层，终端与文件传输同链路
 - AES-256-GCM 凭据加密，API 永不返回明文
 - 可选 SSH `SHA256:` 主机密钥指纹校验
-- 浏览器交互式终端、窗口同步、心跳保活、重连、清屏和全屏
+- 浏览器交互式终端（显示完整跳板路径）、窗口同步、心跳保活、重连、清屏和全屏
+- 明暗主题切换，跟随系统偏好并持久化
 - SFTP 目录浏览、文件上传与下载；上传默认不覆盖同名文件
-- 登录、配置变更、SSH 命令、会话和文件传输审计
+- 登录、配置变更、SSH 命令、会话和文件传输审计（含跳板链路）
 - SSH 输入/输出会话录像在线回放与下载
 - 管理员查看并强制断开活动 SSH 会话
 - 用户自助修改密码，修改后旧登录会话立即失效
@@ -105,9 +121,10 @@ Compose 默认启用只读根文件系统、删除全部 Linux capabilities、�
 ## 资产与凭据
 
 1. 管理员在“凭据管理”创建密码或 SSH 私钥凭据。
-2. 在“资产管理”填写主机、端口、SSH 用户、资产组并关联凭据。
-3. 建议填写目标服务器的 `SHA256:` 主机密钥指纹。
-4. 为运维用户配置允许访问的资产组。
+2. 在“资产管理”填写主机、端口、SSH 用户、资产组并关联凭据；也可使用“网段发现”扫描 `192.168.1.0/24` 等 CIDR 后一键导入。
+3. 内网设备可在“跳板机”字段选择另一资产作为中转（最多级联 5 层）；终端、文件传输和连通性测试都会先登录跳板机再转发。
+4. 建议填写目标服务器的 `SHA256:` 主机密钥指纹（跳板机与目标各自独立校验）。
+5. 为运维用户配置允许访问的资产组；连接链路上的每一跳都要求用户对其资产组有权限。
 
 获取 OpenSSH 主机密钥指纹示例：
 
@@ -131,7 +148,7 @@ ssh-keyscan example.com | ssh-keygen -lf - -E sha256
 
 ## 审计与会话记录
 
-- `audit.jsonl` 记录认证、用户/资产/凭据变更、SSH 命令和文件操作。
+- `audit.jsonl` 记录认证、用户/资产/凭据变更、SSH 命令和文件操作，SSH 与文件事件包含完整跳板链路（`jump_path`）。
 - `recordings/*.jsonl` 以 Base64 帧保存终端输入和输出。
 - 录像只允许管理员和审计员下载。
 - 审计文件可能包含用户在终端输入的命令和敏感输出，应按敏感数据保护。
@@ -159,10 +176,12 @@ data/recordings/
 | `POST` | `/api/auth/logout` | 退出 |
 | `GET` | `/api/me` | 当前用户 |
 | `POST` | `/api/me/password` | 修改当前用户密码并注销旧会话 |
-| `GET/POST/PUT/DELETE` | `/api/assets` | 资产管理 |
+| `GET/POST/PUT/DELETE` | `/api/assets` | 资产管理（含 `jump_asset_id` 跳板级联字段） |
 | `POST` | `/api/assets/{id}/test` | 测试 SSH 握手与认证 |
 | `GET/POST/PUT/DELETE` | `/api/credentials` | 凭据管理 |
 | `GET/POST/PUT` | `/api/users` | 用户与权限管理 |
+| `DELETE` | `/api/users/{id}` | 删除用户并吊销其会话（不允许删除最后一个管理员） |
+| `POST` | `/api/discovery` | 管理员网段发现：`{"cidr":"192.168.1.0/24","port":22,"timeout_ms":1500}`，返回开放 SSH 端口的主机与版本横幅 |
 | `GET` | `/ws/{assetID}` | 已授权资产的 SSH WebSocket |
 | `GET/POST` | `/api/assets/{id}/files` | SFTP 列表/上传 |
 | `PATCH/DELETE` | `/api/assets/{id}/files` | SFTP 重命名/删除 |

@@ -15,28 +15,30 @@ func (r Role) Valid() bool {
 }
 
 type User struct {
-	ID           string    `json:"id"`
-	Username     string    `json:"username"`
-	PasswordHash string    `json:"password_hash,omitempty"`
-	Role         Role      `json:"role"`
-	AssetGroups  []string  `json:"asset_groups,omitempty"`
-	Enabled      bool      `json:"enabled"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           string     `json:"id"`
+	Username     string     `json:"username"`
+	PasswordHash string     `json:"password_hash,omitempty"`
+	Role         Role       `json:"role"`
+	AssetGroups  []string   `json:"asset_groups,omitempty"`
+	Enabled      bool       `json:"enabled"`
+	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 type PublicUser struct {
-	ID          string    `json:"id"`
-	Username    string    `json:"username"`
-	Role        Role      `json:"role"`
-	AssetGroups []string  `json:"asset_groups,omitempty"`
-	Enabled     bool      `json:"enabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string     `json:"id"`
+	Username    string     `json:"username"`
+	Role        Role       `json:"role"`
+	AssetGroups []string   `json:"asset_groups,omitempty"`
+	Enabled     bool       `json:"enabled"`
+	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 func (u User) Public() PublicUser {
-	return PublicUser{ID: u.ID, Username: u.Username, Role: u.Role, AssetGroups: append([]string(nil), u.AssetGroups...), Enabled: u.Enabled, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
+	return PublicUser{ID: u.ID, Username: u.Username, Role: u.Role, AssetGroups: append([]string(nil), u.AssetGroups...), Enabled: u.Enabled, LastLoginAt: u.LastLoginAt, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
 }
 
 // MaxJumpHops 限定单个资产可级联的跳板机数量上限。

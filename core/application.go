@@ -45,6 +45,7 @@ func (a *Application) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/assets/{id}", a.requireRoles(a.saveAsset, RoleAdmin))
 	mux.HandleFunc("DELETE /api/assets/{id}", a.requireRoles(a.deleteAsset, RoleAdmin))
 	mux.HandleFunc("POST /api/assets/{id}/test", a.requireRoles(a.testAsset, RoleAdmin))
+	mux.HandleFunc("POST /api/discovery", a.requireRoles(a.discoverHosts, RoleAdmin))
 	mux.HandleFunc("GET /api/credentials", a.requireRoles(a.listCredentials, RoleAdmin))
 	mux.HandleFunc("POST /api/credentials", a.requireRoles(a.saveCredential, RoleAdmin))
 	mux.HandleFunc("PUT /api/credentials/{id}", a.requireRoles(a.saveCredential, RoleAdmin))
@@ -52,6 +53,7 @@ func (a *Application) Handler() http.Handler {
 	mux.HandleFunc("GET /api/users", a.requireRoles(a.listUsers, RoleAdmin))
 	mux.HandleFunc("POST /api/users", a.requireRoles(a.createUser, RoleAdmin))
 	mux.HandleFunc("PUT /api/users/{id}", a.requireRoles(a.updateUser, RoleAdmin))
+	mux.HandleFunc("DELETE /api/users/{id}", a.requireRoles(a.deleteUser, RoleAdmin))
 	mux.HandleFunc("GET /api/audits", a.requireRoles(a.listAudits, RoleAdmin, RoleAuditor))
 	mux.HandleFunc("GET /api/sessions", a.requireRoles(a.listSessions, RoleAdmin, RoleAuditor))
 	mux.HandleFunc("DELETE /api/sessions/{id}", a.requireRoles(a.terminateSession, RoleAdmin))
@@ -140,6 +142,7 @@ func (a *Application) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.limiter.Success(ip)
+	a.store.TouchLogin(user.ID)
 	token, expires, err := a.sessions.Create(user.ID)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "创建会话失败")
@@ -330,6 +333,21 @@ func (a *Application) updateUser(w http.ResponseWriter, r *http.Request) {
 	a.sessions.DeleteUser(user.ID)
 	_ = a.store.AppendAudit(a.auditFor(r, "user.update", "user", user.ID, true, map[string]any{"username": user.Username, "role": user.Role, "enabled": user.Enabled}))
 	writeJSON(w, http.StatusOK, user)
+}
+
+func (a *Application) deleteUser(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if current, ok := requestUser(r); ok && id == current.ID {
+		writeAPIError(w, http.StatusBadRequest, "不能删除当前登录用户")
+		return
+	}
+	if err := a.store.DeleteUser(id); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	a.sessions.DeleteUser(id)
+	_ = a.store.AppendAudit(a.auditFor(r, "user.delete", "user", id, true, nil))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *Application) listAudits(w http.ResponseWriter, r *http.Request) {

@@ -180,6 +180,43 @@ func (s *Store) UpdateUser(id string, role Role, enabled bool, password string, 
 	return PublicUser{}, ErrNotFound
 }
 
+func (s *Store) DeleteUser(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	target := -1
+	enabledAdmins := 0
+	for i, user := range s.state.Users {
+		if user.ID == id {
+			target = i
+		}
+		if user.Role == RoleAdmin && user.Enabled {
+			enabledAdmins++
+		}
+	}
+	if target < 0 {
+		return ErrNotFound
+	}
+	if s.state.Users[target].Role == RoleAdmin && s.state.Users[target].Enabled && enabledAdmins <= 1 {
+		return fmt.Errorf("不能删除最后一个启用的管理员")
+	}
+	s.state.Users = append(s.state.Users[:target], s.state.Users[target+1:]...)
+	return s.saveLocked()
+}
+
+// TouchLogin 记录用户最后登录时间。
+func (s *Store) TouchLogin(id string) {
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Users {
+		if s.state.Users[i].ID == id {
+			s.state.Users[i].LastLoginAt = &now
+			_ = s.saveLocked()
+			return
+		}
+	}
+}
+
 func cleanGroups(groups []string) []string {
 	seen := make(map[string]struct{}, len(groups))
 	clean := make([]string, 0, len(groups))

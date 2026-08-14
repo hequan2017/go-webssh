@@ -18,6 +18,24 @@
   const modalError = document.querySelector('#modal-error');
   const modalSubmitButton = modalForm.querySelector('button[type="submit"]');
   const toastRoot = document.querySelector('#toast');
+  const themeToggle = document.querySelector('#theme-toggle');
+
+  const applyTheme = theme => {
+    document.documentElement.dataset.theme = theme;
+    themeToggle.textContent = theme === 'light' ? '☀️' : '🌙';
+    themeToggle.setAttribute('aria-label', theme === 'light' ? '切换到深色主题' : '切换到浅色主题');
+  };
+  const storedTheme = (() => { try { return localStorage.getItem('webssh-theme'); } catch (_) { return null; } })();
+  const queryTheme = new URLSearchParams(location.search).get('theme');
+  const initialTheme = queryTheme === 'light' || queryTheme === 'dark'
+    ? queryTheme
+    : (storedTheme === 'light' || storedTheme === 'dark' ? storedTheme : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
+  applyTheme(initialTheme);
+  themeToggle.onclick = () => {
+    const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    try { localStorage.setItem('webssh-theme', next); } catch (_) {}
+    applyTheme(next);
+  };
 
   const state = {
     demo: mode === 'demo',
@@ -109,16 +127,17 @@
       { id: 'cred-2', name: '测试环境密码', type: 'password', created_at: now }
     ];
     state.assets = [
-      { id: 'asset-1', name: '生产 Web 节点', host: '10.20.0.11', port: 22, username: 'ops', credential_id: 'cred-1', group: 'prod', description: 'Nginx 与 API 服务', enabled: true },
-      { id: 'asset-2', name: '测试数据库', host: '10.30.0.21', port: 22, username: 'dba', credential_id: 'cred-2', group: 'test', description: 'MySQL 测试实例', enabled: true },
-      { id: 'asset-3', name: '归档节点', host: '10.40.0.8', port: 2222, username: 'archive', credential_id: 'cred-1', group: 'archive', description: '离线归档', enabled: false }
+      { id: 'asset-1', name: '生产入口跳板', host: '10.20.0.5', port: 22, username: 'ops', credential_id: 'cred-1', group: 'prod', description: '生产环境统一入口', enabled: true },
+      { id: 'asset-2', name: '生产 Web 节点', host: '10.20.0.11', port: 22, username: 'ops', credential_id: 'cred-1', jump_asset_id: 'asset-1', group: 'prod', description: 'Nginx 与 API 服务，经跳板访问', enabled: true },
+      { id: 'asset-3', name: '测试数据库', host: '10.30.0.21', port: 22, username: 'dba', credential_id: 'cred-2', group: 'test', description: 'MySQL 测试实例', enabled: true },
+      { id: 'asset-4', name: '归档节点', host: '10.40.0.8', port: 2222, username: 'archive', credential_id: 'cred-1', jump_asset_id: 'asset-1', group: 'archive', description: '离线归档', enabled: false }
     ];
     state.users = [
-      { id: 'u1', username: 'admin', role: 'admin', asset_groups: ['*'], enabled: true, created_at: now },
-      { id: 'u2', username: 'operator', role: 'operator', asset_groups: ['prod', 'test'], enabled: true, created_at: now },
+      { id: 'u1', username: 'admin', role: 'admin', asset_groups: ['*'], enabled: true, last_login_at: now, created_at: now },
+      { id: 'u2', username: 'operator', role: 'operator', asset_groups: ['prod', 'test'], enabled: true, last_login_at: now, created_at: now },
       { id: 'u3', username: 'auditor', role: 'auditor', asset_groups: [], enabled: true, created_at: now }
     ];
-    state.sessions = [{ id: 's1', username: 'operator', asset_name: '生产 Web 节点', client_ip: '192.168.1.20', status: 'closed', started_at: now, ended_at: now }];
+    state.sessions = [{ id: 's1', username: 'operator', asset_name: '生产 Web 节点', jump_names: ['生产入口跳板'], client_ip: '192.168.1.20', status: 'closed', started_at: now, ended_at: now }];
     state.audits = [{ id: 'a1', time: now, username: 'operator', action: 'ssh.connect', resource_type: 'asset', resource_id: 'asset-1', client_ip: '192.168.1.20', success: true }];
   };
 
@@ -139,27 +158,61 @@
   const emptyRow = (columns, text) => `<tr><td colspan="${columns}" class="empty">${escapeHTML(text)}</td></tr>`;
 
   const renderDashboard = async () => {
+    const privileged = ['admin', 'auditor'].includes(state.me.role);
     const data = ['assets'];
-    if (['admin', 'auditor'].includes(state.me.role)) data.push('sessions', 'audits');
+    if (privileged) data.push('sessions', 'audits');
     await ensureData(...data);
     const active = state.sessions.filter(item => item.status === 'active').length;
     const failures = state.audits.filter(item => !item.success).length;
     const recent = state.audits.slice(0, 8);
+    const enabledAssets = state.assets.filter(item => item.enabled);
+    const jumped = state.assets.filter(item => item.jump_asset_id).length;
+    const stats = privileged
+      ? `<article class="stat-card linked" data-action="nav" data-view="assets"><span>受管资产</span><strong>${state.assets.length}</strong></article>
+         <article class="stat-card linked" data-action="nav" data-view="assets"><span>可用资产</span><strong>${enabledAssets.length}</strong></article>
+         <article class="stat-card linked" data-action="nav" data-view="sessions"><span>活动会话</span><strong>${active}</strong></article>
+         <article class="stat-card linked" data-action="nav" data-view="audits"><span>近期失败事件</span><strong>${failures}</strong></article>`
+      : `<article class="stat-card linked" data-action="nav" data-view="assets"><span>可访问资产</span><strong>${state.assets.length}</strong></article>
+         <article class="stat-card linked" data-action="nav" data-view="assets"><span>可用资产</span><strong>${enabledAssets.length}</strong></article>
+         <article class="stat-card"><span>所属资产组</span><strong>${assetGroups().length}</strong></article>
+         <article class="stat-card"><span>经跳板访问</span><strong>${jumped}</strong></article>`;
+    const quick = state.me.role !== 'auditor' && enabledAssets.length
+      ? `<section class="panel"><div class="panel-head"><h3>快速访问</h3><button class="button" data-action="nav" data-view="assets">全部资产</button></div><div class="quick-grid">${enabledAssets.slice(0, 8).map(asset => `
+          <article class="quick-card"><div class="quick-title"><strong title="${escapeHTML(asset.name)}">${escapeHTML(asset.name)}</strong>${asset.jump_asset_id ? `<span class="badge badge-info" title="经 ${escapeHTML(jumpName(asset.jump_asset_id))} 中转">⇢ 跳板</span>` : ''}</div>
+          <p class="mono muted">${escapeHTML(asset.username)}@${escapeHTML(asset.host)}:${asset.port}</p>
+          <div class="table-actions"><button class="button button-primary" data-action="terminal" data-id="${asset.id}">终端</button><button class="button" data-action="files" data-id="${asset.id}">文件</button></div></article>`).join('')}</div></section>`
+      : '';
     content.innerHTML = `
       ${pageHead('安全访问概览', '统一管理 SSH 资产、访问权限与审计证据。')}
-      <section class="stats">
-        <article class="stat-card"><span>受管资产</span><strong>${state.assets.length}</strong></article>
-        <article class="stat-card"><span>可用资产</span><strong>${state.assets.filter(item => item.enabled).length}</strong></article>
-        <article class="stat-card"><span>活动会话</span><strong>${active}</strong></article>
-        <article class="stat-card"><span>近期失败事件</span><strong>${failures}</strong></article>
-      </section>
-      <section class="panel"><div class="panel-head"><h3>最近审计事件</h3></div><div class="table-wrap"><table>
+      <section class="stats">${stats}</section>
+      ${quick}
+      <section class="panel"><div class="panel-head"><h3>资产组分布</h3></div><div class="chip-row pad">${assetGroups().length ? assetGroups().map(group => `<button class="chip" data-action="nav" data-view="assets" data-group="${escapeHTML(group)}">${escapeHTML(group)}<small class="chip-count">${state.assets.filter(item => (item.group || 'default') === group).length}</small></button>`).join('') : '<span class="muted">暂无资产组</span>'}</div></section>
+      ${privileged ? `<section class="panel"><div class="panel-head"><h3>最近审计事件</h3><button class="button" data-action="nav" data-view="audits">全部日志</button></div><div class="table-wrap"><table>
         <thead><tr><th>时间</th><th>用户</th><th>动作</th><th>来源 IP</th><th>结果</th></tr></thead>
-        <tbody>${recent.length ? recent.map(auditRow).join('') : emptyRow(5, state.me.role === 'operator' ? '当前角色不查看审计日志' : '暂无审计事件')}</tbody>
-      </table></div></section>`;
+        <tbody>${recent.length ? recent.map(auditRow).join('') : emptyRow(5, '暂无审计事件')}</tbody>
+      </table></div></section>` : ''}`;
   };
 
   const credentialName = id => state.credentials.find(item => item.id === id)?.name || '-';
+  const assetById = id => state.assets.find(item => item.id === id) || null;
+  const jumpName = id => assetById(id)?.name || '未知资产';
+  const assetPath = asset => {
+    const path = [];
+    const seen = new Set();
+    let current = asset;
+    while (current) {
+      if (seen.has(current.id)) break;
+      seen.add(current.id);
+      path.unshift(current);
+      current = current.jump_asset_id ? assetById(current.jump_asset_id) : null;
+    }
+    return path;
+  };
+  const jumpVia = (id, names) => {
+    const label = names ? (names.length ? names.join(' → ') : '') : (id ? jumpName(id) : '');
+    return label ? `<br><span class="jump-via">⇢ 经 ${escapeHTML(label)} 中转</span>` : '';
+  };
+  const assetGroups = () => [...new Set(state.assets.map(item => item.group || 'default'))].sort();
   const assetActions = asset => {
     const connection = state.me.role !== 'auditor' ? `<button class="button button-primary" data-action="terminal" data-id="${asset.id}" ${asset.enabled ? '' : 'disabled'}>终端</button><button class="button" data-action="files" data-id="${asset.id}" ${asset.enabled ? '' : 'disabled'}>文件</button>` : '';
     const admin = state.me.role === 'admin' ? `<button class="button" data-action="test-asset" data-id="${asset.id}">测试</button><button class="button" data-action="edit-asset" data-id="${asset.id}">编辑</button><button class="button button-danger" data-action="delete-asset" data-id="${asset.id}">删除</button>` : '';
@@ -170,14 +223,24 @@
     const types = ['assets'];
     if (state.me.role === 'admin') types.push('credentials');
     await ensureData(...types);
-    const add = state.me.role === 'admin' ? '<button class="button button-primary" data-action="add-asset">新增资产</button>' : '';
-    content.innerHTML = `${pageHead('资产管理', '通过资产组控制运维人员能够访问的服务器。', `<input id="asset-filter" class="filter-input" placeholder="搜索名称、地址、账号或资产组">${add}`)}
-      <section class="panel"><div class="table-wrap"><table><thead><tr><th>名称</th><th>地址</th><th>账号</th><th>资产组</th><th>凭据</th><th>状态</th><th>操作</th></tr></thead>
-      <tbody id="asset-rows">${state.assets.length ? state.assets.map(asset => `<tr data-search="${escapeHTML(`${asset.name} ${asset.host} ${asset.username} ${asset.group} ${asset.description || ''}`.toLowerCase())}"><td><strong>${escapeHTML(asset.name)}</strong><br><span class="muted">${escapeHTML(asset.description || '')}</span></td><td class="mono">${escapeHTML(asset.host)}:${asset.port}</td><td>${escapeHTML(asset.username)}</td><td><span class="badge">${escapeHTML(asset.group || 'default')}</span></td><td>${escapeHTML(credentialName(asset.credential_id))}</td><td><span class="badge ${asset.enabled ? 'badge-success' : 'badge-danger'}">${asset.enabled ? '可用' : '禁用'}</span></td><td><div class="table-actions">${assetActions(asset)}</div></td></tr>`).join('') : emptyRow(7, '暂无资产')}</tbody></table></div></section>`;
-    document.querySelector('#asset-filter')?.addEventListener('input', event => {
-      const query = event.target.value.trim().toLowerCase();
-      document.querySelectorAll('#asset-rows tr[data-search]').forEach(row => { row.hidden = query !== '' && !row.dataset.search.includes(query); });
-    });
+    if (!state.assetGroupFilter || (state.assetGroupFilter !== '全部' && !assetGroups().includes(state.assetGroupFilter))) state.assetGroupFilter = '全部';
+    const add = state.me.role === 'admin' ? '<button class="button" data-action="discover">网段发现</button><button class="button button-primary" data-action="add-asset">新增资产</button>' : '';
+    const chips = ['全部', ...assetGroups()].map(group => `<button class="chip${state.assetGroupFilter === group ? ' active' : ''}" data-action="filter-group" data-group="${escapeHTML(group)}">${escapeHTML(group)}<small class="chip-count">${group === '全部' ? state.assets.length : state.assets.filter(item => (item.group || 'default') === group).length}</small></button>`).join('');
+    content.innerHTML = `${pageHead('资产管理', '通过资产组控制运维人员能够访问的服务器；资产可配置经另一台资产作为跳板机级联访问。', `<input id="asset-filter" class="filter-input" placeholder="搜索名称、地址、账号或资产组">${add}`)}
+      <section class="panel"><div class="chip-row pad">${chips}</div><div class="table-wrap"><table><thead><tr><th>设备名称</th><th>地址</th><th>账号</th><th>资产组</th><th>凭据</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="asset-rows">${state.assets.length ? state.assets.map(asset => `<tr data-search="${escapeHTML(`${asset.name} ${asset.host} ${asset.username} ${asset.group} ${asset.description || ''}`.toLowerCase())}" data-group="${escapeHTML(asset.group || 'default')}"><td><strong>${escapeHTML(asset.name)}</strong><br><span class="muted">${escapeHTML(asset.description || '')}</span></td><td class="mono">${escapeHTML(asset.host)}:${asset.port}${jumpVia(asset.jump_asset_id)}</td><td>${escapeHTML(asset.username)}</td><td><span class="badge">${escapeHTML(asset.group || 'default')}</span></td><td>${escapeHTML(credentialName(asset.credential_id))}</td><td><span class="badge ${asset.enabled ? 'badge-success' : 'badge-danger'}">${asset.enabled ? '可用' : '禁用'}</span></td><td><div class="table-actions">${assetActions(asset)}</div></td></tr>`).join('') : emptyRow(7, '暂无资产')}</tbody></table></div></section>`;
+    const applyFilters = () => {
+      const query = (document.querySelector('#asset-filter')?.value || '').trim().toLowerCase();
+      const group = state.assetGroupFilter;
+      document.querySelectorAll('#asset-rows tr[data-search]').forEach(row => {
+        const matchQuery = query === '' || row.dataset.search.includes(query);
+        const matchGroup = group === '全部' || row.dataset.group === group;
+        row.hidden = !(matchQuery && matchGroup);
+      });
+    };
+    document.querySelector('#asset-filter')?.addEventListener('input', applyFilters);
+    state.applyAssetFilters = applyFilters;
+    applyFilters();
   };
 
   const renderCredentials = async () => {
@@ -190,8 +253,8 @@
   const renderUsers = async () => {
     await ensureData('users');
     content.innerHTML = `${pageHead('用户与权限', '管理员管理全局资源；运维人员仅访问授权资产组；审计员只读审计数据。', '<button class="button button-primary" data-action="add-user">新增用户</button>')}
-      <section class="panel"><div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>资产组</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody>
-      ${state.users.length ? state.users.map(user => `<tr><td>${escapeHTML(user.username)}</td><td><span class="badge">${roleName(user.role)}</span></td><td>${escapeHTML((user.asset_groups || []).join(', ') || '-')}</td><td><span class="badge ${user.enabled ? 'badge-success' : 'badge-danger'}">${user.enabled ? '启用' : '禁用'}</span></td><td>${formatTime(user.created_at)}</td><td><button class="button" data-action="edit-user" data-id="${user.id}">编辑</button></td></tr>`).join('') : emptyRow(6, '暂无用户')}</tbody></table></div></section>`;
+      <section class="panel"><div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>资产组</th><th>状态</th><th>最后登录</th><th>创建时间</th><th>操作</th></tr></thead><tbody>
+      ${state.users.length ? state.users.map(user => `<tr><td>${escapeHTML(user.username)}${state.me.id === user.id ? ' <span class="muted">（当前登录）</span>' : ''}</td><td><span class="badge">${roleName(user.role)}</span></td><td>${escapeHTML((user.asset_groups || []).join(', ') || '-')}</td><td><span class="badge ${user.enabled ? 'badge-success' : 'badge-danger'}">${user.enabled ? '启用' : '禁用'}</span></td><td>${formatTime(user.last_login_at)}</td><td>${formatTime(user.created_at)}</td><td><div class="table-actions"><button class="button" data-action="edit-user" data-id="${user.id}">编辑</button>${state.me.id !== user.id ? `<button class="button button-danger" data-action="delete-user" data-id="${user.id}" data-username="${escapeHTML(user.username)}">删除</button>` : ''}</div></td></tr>`).join('') : emptyRow(7, '暂无用户')}</tbody></table></div></section>`;
   };
 
   const auditRow = item => `<tr><td>${formatTime(item.time)}</td><td>${escapeHTML(item.username || '-')}</td><td class="mono">${escapeHTML(item.action)}</td><td>${escapeHTML(item.client_ip || '-')}</td><td><span class="badge ${item.success ? 'badge-success' : 'badge-danger'}">${item.success ? '成功' : '失败'}</span></td></tr>`;
@@ -207,9 +270,9 @@
 
   const renderSessions = async () => {
     await ensureData('sessions');
-    content.innerHTML = `${pageHead('会话记录', '记录 SSH 会话参与者、资产、状态和输入输出录像。')}
+    content.innerHTML = `${pageHead('会话记录', '记录 SSH 会话参与者、资产、状态和输入输出录像。', '<button class="button" data-action="refresh-view">刷新</button>')}
       <section class="panel"><div class="table-wrap"><table><thead><tr><th>开始时间</th><th>用户</th><th>资产</th><th>来源 IP</th><th>状态</th><th>结束时间</th><th>录像</th></tr></thead><tbody>
-      ${state.sessions.length ? state.sessions.map(item => `<tr><td>${formatTime(item.started_at)}</td><td>${escapeHTML(item.username)}</td><td>${escapeHTML(item.asset_name)}</td><td>${escapeHTML(item.client_ip)}</td><td><span class="badge ${item.status === 'active' ? 'badge-success' : item.status === 'failed' ? 'badge-danger' : ''}">${escapeHTML(item.status)}</span></td><td>${formatTime(item.ended_at)}</td><td><div class="table-actions">${state.demo ? '<button class="button" data-action="demo-only">回放</button>' : `<button class="button" data-action="play-recording" data-id="${item.id}">回放</button><a class="button" href="/api/sessions/${item.id}/recording">下载</a>`}${state.me.role === 'admin' && item.status === 'active' ? `<button class="button button-danger" data-action="terminate-session" data-id="${item.id}">强制断开</button>` : ''}</div></td></tr>`).join('') : emptyRow(7, '暂无会话')}</tbody></table></div></section>`;
+      ${state.sessions.length ? state.sessions.map(item => `<tr><td>${formatTime(item.started_at)}</td><td>${escapeHTML(item.username)}</td><td>${escapeHTML(item.asset_name)}${jumpVia(null, item.jump_names)}</td><td>${escapeHTML(item.client_ip)}</td><td><span class="badge ${item.status === 'active' ? 'badge-success' : item.status === 'failed' ? 'badge-danger' : ''}">${escapeHTML(item.status)}</span></td><td>${formatTime(item.ended_at)}</td><td><div class="table-actions">${state.demo ? '<button class="button" data-action="demo-only">回放</button>' : `<button class="button" data-action="play-recording" data-id="${item.id}">回放</button><a class="button" href="/api/sessions/${item.id}/recording">下载</a>`}${state.me.role === 'admin' && item.status === 'active' ? `<button class="button button-danger" data-action="terminate-session" data-id="${item.id}">强制断开</button>` : ''}</div></td></tr>`).join('') : emptyRow(7, '暂无会话')}</tbody></table></div></section>`;
   };
 
   const cleanupTerminal = () => {
@@ -230,13 +293,15 @@
   const openTerminal = asset => {
     cleanupTerminal();
     state.currentView = 'terminal';
+    const route = assetPath(asset);
+    const routeText = route.map(item => item.name).join(' → ');
     pageTitle.textContent = `SSH 终端 · ${asset.name}`;
-    content.innerHTML = `<section class="terminal-page"><div class="terminal-toolbar"><div><button class="button" data-action="back-assets">← 返回资产</button><span id="terminal-status" class="badge">准备连接</span></div><div><button id="terminal-clear" class="button">清屏</button><button id="terminal-reconnect" class="button button-primary">重连</button><button id="terminal-fullscreen" class="button">全屏</button></div></div><div id="terminal-shell" class="terminal-shell"><div id="terminal"></div></div></section>`;
+    content.innerHTML = `<section class="terminal-page"><div class="terminal-toolbar"><div><button class="button" data-action="back-assets">← 返回资产</button><span class="route-badge mono" title="${escapeHTML(routeText)}">${escapeHTML(routeText)}</span><span id="terminal-status" class="badge">准备连接</span></div><div><button id="terminal-clear" class="button">清屏</button><button id="terminal-reconnect" class="button button-primary">重连</button><button id="terminal-fullscreen" class="button">全屏</button></div></div><div id="terminal-shell" class="terminal-shell"><div id="terminal"></div></div></section>`;
     const root = document.querySelector('#terminal');
     const shell = document.querySelector('#terminal-shell');
     const status = document.querySelector('#terminal-status');
     const reconnect = document.querySelector('#terminal-reconnect');
-    const term = new Terminal({ cursorBlink: true, convertEol: true, fontSize: 14, fontFamily: 'Cascadia Code, Consolas, monospace', theme: { background: '#05070b', foreground: '#d8dee9', cursor: '#22c55e' } });
+    const term = new Terminal({ cursorBlink: true, convertEol: true, fontSize: 14, fontFamily: 'Cascadia Code, Consolas, monospace' });
     state.terminal = term;
     term.open(root);
     const dimensions = () => ({ cols: Math.max(20, Math.floor((root.clientWidth - 24) / 8.4)), rows: Math.max(5, Math.floor((root.clientHeight - 24) / 17)) });
@@ -253,6 +318,7 @@
         reconnect.disabled = false;
         term.clear();
         term.writeln('\x1b[36mgo-webssh 跳板机终端演示\x1b[0m');
+        term.writeln(`连接路径：${routeText}`);
         term.writeln(`资产：${asset.name} (${asset.username}@${asset.host}:${asset.port})`);
         term.writeln('静态演示不会建立真实 SSH 连接。');
         term.write('\r\n\x1b[32mdemo@bastion\x1b[0m:$ ');
@@ -262,8 +328,9 @@
       const socket = new WebSocket(`${protocol}//${location.host}/ws/${asset.id}?cols=${size.cols}&rows=${size.rows}`);
       state.socket = socket;
       socket.binaryType = 'arraybuffer';
+      const decoder = new TextDecoder();
       socket.onopen = () => { status.textContent = '已连接'; status.className = 'badge badge-success'; term.focus(); };
-      socket.onmessage = event => term.write(event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : event.data);
+      socket.onmessage = event => term.write(typeof event.data === 'string' ? event.data : decoder.decode(event.data, { stream: true }));
       socket.onerror = () => { status.textContent = '连接异常'; status.className = 'badge badge-danger'; };
       socket.onclose = event => { status.textContent = '已断开'; status.className = 'badge badge-danger'; reconnect.disabled = false; const reason = event.reason ? `：${event.reason}` : ''; term.writeln(`\r\n\x1b[31m连接已关闭${reason}\x1b[0m`); };
     };
@@ -354,14 +421,16 @@
     toast('凭据已保存'); await go('credentials');
   });
 
-  const assetForm = item => `<div class="form-grid">
-    <label>资产名称<input name="name" value="${escapeHTML(item?.name || '')}" required></label><label>资产组<input name="group" value="${escapeHTML(item?.group || 'default')}" required></label>
-    <label>主机/IP<input name="host" value="${escapeHTML(item?.host || '')}" required></label><label>SSH 端口<input name="port" type="number" min="1" max="65535" value="${item?.port || 22}" required></label>
+  const assetForm = (item, preset = {}) => `<div class="form-grid">
+    <label>设备名称<input name="name" value="${escapeHTML(item?.name || preset.name || '')}" required></label><label>资产组<input name="group" value="${escapeHTML(item?.group || preset.group || 'default')}" required></label>
+    <label>主机/IP<input name="host" value="${escapeHTML(item?.host || preset.host || '')}" required></label><label>SSH 端口<input name="port" type="number" min="1" max="65535" value="${item?.port || preset.port || 22}" required></label>
     <label>SSH 用户名<input name="username" value="${escapeHTML(item?.username || 'root')}" required></label><label>登录凭据<select name="credential_id" required><option value="">请选择</option>${state.credentials.map(credential => `<option value="${credential.id}" ${credential.id === item?.credential_id ? 'selected' : ''}>${escapeHTML(credential.name)} · ${credentialTypeName(credential.type)}</option>`).join('')}</select></label>
+    <label class="full">跳板机（可选，最多级联 5 层）<select name="jump_asset_id"><option value="">直连（不经过跳板机）</option>${state.assets.filter(candidate => candidate.id !== item?.id).map(candidate => `<option value="${candidate.id}" ${candidate.id === item?.jump_asset_id ? 'selected' : ''}>${escapeHTML(candidate.name)} · ${escapeHTML(candidate.host)}${candidate.enabled ? '' : '（已禁用）'}</option>`).join('')}</select></label>
     <label class="full">SSH 主机密钥指纹（推荐）<input name="host_key_fingerprint" value="${escapeHTML(item?.host_key_fingerprint || '')}" placeholder="SHA256:..."></label>
-    <label class="full">描述<input name="description" value="${escapeHTML(item?.description || '')}"></label><label class="check-label full"><input name="enabled" type="checkbox" ${item ? item.enabled ? 'checked' : '' : 'checked'}>启用资产</label></div>`;
+    <label class="full">描述<input name="description" value="${escapeHTML(item?.description || '')}"></label><label class="check-label full"><input name="enabled" type="checkbox" ${item ? item.enabled ? 'checked' : '' : 'checked'}>启用资产</label></div>
+    <p class="form-hint">配置跳板机后，终端与文件传输都会先登录跳板机再转发到本资产；连接用户需要对跳板机所在资产组有访问权限。</p>`;
 
-  const openAssetModal = item => openModal(item ? '编辑资产' : '新增资产', assetForm(item), async form => {
+  const openAssetModal = (item, preset = {}) => openModal(item ? '编辑资产' : '新增资产', assetForm(item, preset), async form => {
     if (!mutable()) return false;
     const raw = Object.fromEntries(new FormData(form));
     const data = { ...raw, port: Number(raw.port), enabled: form.elements.enabled.checked };
@@ -369,11 +438,43 @@
     toast('资产已保存'); await go('assets');
   });
 
+  const discoveryForm = () => `<div class="form-grid">
+    <label class="full">网段（CIDR 或单个 IP）<input name="cidr" placeholder="192.168.112.0/24 或 192.168.112.36" required></label>
+    <label>SSH 端口<input name="port" type="number" min="1" max="65535" value="22" required></label>
+    <label>单主机超时（毫秒）<input name="timeout_ms" type="number" min="200" max="5000" value="1500" required></label>
+    <p class="form-hint">对目标网段并发探测 SSH 端口并读取版本标识（最多 1024 个地址），只做发现不做登录，结果需手动导入为资产。</p></div>`;
+
+  const renderDiscoveryResults = hosts => {
+    modalError.textContent = '';
+    if (!hosts.length) {
+      modalBody.innerHTML = '<div class="empty">未发现开放目标端口的主机；可尝试增大超时、更换端口或检查网段。</div>';
+      return;
+    }
+    modalBody.innerHTML = `<p class="form-hint" style="margin-top:0">发现 ${hosts.length} 台开放端口的设备，点击"新增为资产"预填资产表单。</p>
+      <div class="table-wrap"><table><thead><tr><th>地址</th><th>SSH 版本标识</th><th>状态</th><th>操作</th></tr></thead><tbody>
+      ${hosts.map(host => `<tr><td class="mono">${escapeHTML(host.host)}:${host.port}</td><td class="mono muted">${escapeHTML(host.ssh_banner || '-')}</td><td><span class="badge ${host.is_ssh ? 'badge-success' : 'badge-info'}">${host.is_ssh ? 'SSH 服务' : '端口开放'}</span></td><td><button class="button button-primary" data-action="import-asset" data-host="${escapeHTML(host.host)}" data-port="${host.port}">新增为资产</button></td></tr>`).join('')}</tbody></table></div>`;
+  };
+
+  const openDiscoveryModal = () => openModal('网段发现', discoveryForm(), async form => {
+    if (!mutable()) return false;
+    const raw = Object.fromEntries(new FormData(form));
+    modalSubmitButton.disabled = true;
+    modalSubmitButton.textContent = '扫描中...';
+    try {
+      const result = await api('/api/discovery', jsonOptions('POST', { cidr: raw.cidr, port: Number(raw.port), timeout_ms: Number(raw.timeout_ms) }));
+      renderDiscoveryResults(result.hosts || []);
+    } finally {
+      modalSubmitButton.disabled = false;
+      modalSubmitButton.textContent = '重新扫描';
+    }
+    return false;
+  }, '扫描');
+
   const userForm = item => `<div class="form-grid">
     ${item ? '' : `<label class="full">用户名<input name="username" required></label>`}
     <label>角色<select name="role"><option value="admin" ${item?.role === 'admin' ? 'selected' : ''}>管理员</option><option value="operator" ${item?.role === 'operator' ? 'selected' : ''}>运维人员</option><option value="auditor" ${item?.role === 'auditor' ? 'selected' : ''}>审计员</option></select></label>
     <label>资产组<input name="asset_groups" value="${escapeHTML((item?.asset_groups || []).join(','))}" placeholder="prod,test 或 *"></label>
-    <label class="full">${item ? '新密码（留空不修改）' : '密码'}<input name="password" type="password" minlength="12" ${item ? '' : 'required'}></label>
+    <label class="full">${item ? '新密码（留空不修改）' : '初始密码'}<span class="input-group"><input name="password" type="password" minlength="12" ${item ? '' : 'required'}><button class="button" type="button" data-gen-password title="生成 16 位随机密码">${item ? '随机' : '随机生成'}</button></span></label>
     ${item ? `<label class="check-label full"><input name="enabled" type="checkbox" ${item.enabled ? 'checked' : ''}>启用用户</label>` : ''}</div>`;
 
   const openUserModal = item => openModal(item ? '编辑用户' : '新增用户', userForm(item), async form => {
@@ -396,7 +497,15 @@
     const action = target.dataset.action;
     const asset = state.assets.find(item => item.id === target.dataset.id) || state.assets.find(item => item.id === content.dataset.assetId);
     try {
+      if (action === 'nav') { state.assetGroupFilter = target.dataset.group || '全部'; await go(target.dataset.view); }
+      if (action === 'filter-group') {
+        state.assetGroupFilter = target.dataset.group || '全部';
+        document.querySelectorAll('.chip[data-action="filter-group"]').forEach(chip => chip.classList.toggle('active', chip.dataset.group === state.assetGroupFilter));
+        state.applyAssetFilters?.();
+      }
+      if (action === 'refresh-view') await go(state.currentView);
       if (action === 'add-asset') openAssetModal(null);
+      if (action === 'discover') openDiscoveryModal();
       if (action === 'edit-asset') openAssetModal(asset);
       if (action === 'test-asset') {
         if (!mutable()) return;
@@ -417,6 +526,10 @@
       if (action === 'delete-credential' && mutable() && window.confirm('确认删除该凭据？')) { await api(`/api/credentials/${target.dataset.id}`, { method: 'DELETE' }); toast('凭据已删除'); await go('credentials'); }
       if (action === 'add-user') openUserModal(null);
       if (action === 'edit-user') openUserModal(state.users.find(item => item.id === target.dataset.id));
+      if (action === 'delete-user' && mutable() && window.confirm(`确认删除用户“${target.dataset.username}”？该用户的所有登录会话将立即失效。`)) {
+        await api(`/api/users/${target.dataset.id}`, { method: 'DELETE' });
+        toast('用户已删除'); await go('users');
+      }
       if (action === 'open-dir') await renderFiles(asset, target.dataset.path);
       if (action === 'refresh-files') await renderFiles(asset, target.dataset.path);
       if (action === 'upload') {
@@ -459,7 +572,7 @@
       if (action === 'play-recording') {
         const recording = await api(`/api/sessions/${target.dataset.id}/recording`);
         openModal('终端会话回放', '<div id="recording-terminal" class="recording-shell"></div>', async () => {}, '关闭');
-        const playback = new Terminal({ cursorBlink: false, disableStdin: true, convertEol: true, fontSize: 13, fontFamily: 'Cascadia Code, Consolas, monospace', theme: { background: '#05070b', foreground: '#d8dee9' } });
+        const playback = new Terminal({ cursorBlink: false, disableStdin: true, convertEol: true, fontSize: 13, fontFamily: 'Cascadia Code, Consolas, monospace' });
         state.playback = playback;
         playback.open(document.querySelector('#recording-terminal'));
         recording.split('\n').filter(Boolean).forEach(line => {
@@ -484,6 +597,23 @@
     } catch (error) { modalError.textContent = error.message; }
   });
   const closeModal = () => { modal.close(); if (state.playback) { state.playback.destroy(); state.playback = null; } };
+  modalBody.addEventListener('click', event => {
+    const generator = event.target.closest('[data-gen-password]');
+    if (generator) {
+      const input = modalBody.querySelector('input[name="password"]');
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*-_=+';
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      input.value = Array.from(bytes, byte => chars[byte % chars.length]).join('');
+      input.type = 'text';
+      toast('已生成 16 位随机密码，请复制并安全交付给用户');
+      return;
+    }
+    const target = event.target.closest('[data-action="import-asset"]');
+    if (!target) return;
+    closeModal();
+    openAssetModal(null, { host: target.dataset.host, port: Number(target.dataset.port) || 22, name: target.dataset.host, group: 'discovered' });
+  });
   document.querySelector('#modal-close').onclick = closeModal;
   document.querySelector('#modal-cancel').onclick = closeModal;
   modal.addEventListener('close', () => { if (state.playback) { state.playback.destroy(); state.playback = null; } });
@@ -513,9 +643,14 @@
 
   const boot = async () => {
     if (state.demo) {
-      seedDemo(); showApp(); await go('dashboard'); return;
+      seedDemo(); showApp(); await go(initialView()); return;
     }
-    try { state.me = await api('/api/me'); showApp(); await go('dashboard'); } catch (_) { showLogin(); }
+    try { state.me = await api('/api/me'); showApp(); await go(initialView()); } catch (_) { showLogin(); }
+  };
+
+  const initialView = () => {
+    const view = location.hash.replace('#', '');
+    return titles[view] ? view : 'dashboard';
   };
 
   boot();

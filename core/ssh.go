@@ -104,7 +104,17 @@ func buildAuthMethod(cfg *Config) ([]ssh.AuthMethod, error) {
 	if cfg.Password == "" {
 		return nil, fmt.Errorf("必须设置 SSH_PASSWORD 或 SSH_KEY_PATH")
 	}
-	return []ssh.AuthMethod{ssh.Password(cfg.Password)}, nil
+	// 部分设备（交换机、加固系统等）只接受键盘交互认证，密码一致时自动用于回答交互提示。
+	return []ssh.AuthMethod{
+		ssh.Password(cfg.Password),
+		ssh.KeyboardInteractive(func(_ string, _ string, questions []string, _ []bool) ([]string, error) {
+			answers := make([]string, len(questions))
+			for i := range questions {
+				answers[i] = cfg.Password
+			}
+			return answers, nil
+		}),
+	}, nil
 }
 
 func publicKeySigner(path string) (ssh.Signer, error) {
