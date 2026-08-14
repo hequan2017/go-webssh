@@ -1,0 +1,77 @@
+name: Test, build and deploy GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build -trimpath -o "${RUNNER_TEMP}/go-webssh" .
+
+  deploy:
+    name: Deploy Pages
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build static site
+        shell: bash
+        run: |
+          mkdir -p "_site"
+          sed 's/content="server"/content="demo"/' "web/html/index.html" > "_site/index.html"
+          cp -R "static" "_site/static"
+          touch "_site/.nojekyll"
+          grep -q 'name="go-webssh-mode" content="demo"' "_site/index.html"
+          test -f "_site/static/js/xterm.min.js"
+          test -f "_site/static/js/app.js"
+          test -f "_site/static/css/xterm.min.css"
+          test -f "_site/static/css/app.css"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

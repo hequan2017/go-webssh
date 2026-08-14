@@ -3,75 +3,61 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>go-webssh</title>
-  <link rel="icon" href="/static/img/favicon.png">
-  <link rel="stylesheet" href="/static/css/xterm.min.css">
-  <style>
-    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; background: #080b12; color: #e5e7eb; }
-    .app { height: 100vh; padding: 18px; display: grid; grid-template-rows: auto 1fr; gap: 12px; }
-    .bar { display: flex; align-items: center; justify-content: space-between; min-width: 0; }
-    .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: .01em; }
-    .mark { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 18px #22c55e80; }
-    .status { display: flex; align-items: center; gap: 8px; color: #94a3b8; font-size: 13px; }
-    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #f59e0b; }
-    .status[data-state="online"] .status-dot { background: #22c55e; }
-    .status[data-state="offline"] .status-dot { background: #ef4444; }
-    .shell { min-height: 0; overflow: hidden; border: 1px solid #1e293b; border-radius: 12px; background: #05070b; box-shadow: 0 18px 50px #0008; }
-    #terminal { height: 100%; padding: 14px; }
-    .terminal { height: 100%; }
-    @media (max-width: 640px) { .app { padding: 10px; } .shell { border-radius: 9px; } #terminal { padding: 10px; } }
-  </style>
+  <meta name="go-webssh-mode" content="server">
+  <title>go-webssh Bastion</title>
+  <link rel="icon" href="./static/img/favicon.png">
+  <link rel="stylesheet" href="./static/css/xterm.min.css">
+  <link rel="stylesheet" href="./static/css/app.css">
 </head>
 <body>
-  <main class="app">
-    <header class="bar">
-      <div class="brand"><span class="mark"></span><span>go-webssh</span></div>
-      <div id="status" class="status" data-state="connecting"><span class="status-dot"></span><span>正在连接</span></div>
-    </header>
-    <section class="shell" aria-label="SSH 终端"><div id="terminal"></div></section>
-  </main>
-  <script src="/static/js/xterm.min.js"></script>
-  <script>
-    (() => {
-      const status = document.querySelector('#status');
-      const terminalRoot = document.querySelector('#terminal');
-      const term = new Terminal({ cursorBlink: true, convertEol: true, fontSize: 14, fontFamily: 'Cascadia Code, Consolas, monospace', theme: { background: '#05070b', foreground: '#d8dee9', cursor: '#22c55e' } });
-      term.open(terminalRoot);
+  <section id="login-view" class="login-view">
+    <div class="login-card">
+      <div class="login-brand"><span class="brand-mark">&gt;_</span><div><strong>go-webssh</strong><small>Bastion Host</small></div></div>
+      <h1>登录跳板机</h1>
+      <p>统一访问受管 SSH 资产，所有连接和文件操作均进入审计。</p>
+      <form id="login-form" class="form-stack">
+        <label>用户名<input id="login-username" name="username" autocomplete="username" required></label>
+        <label>密码<input id="login-password" name="password" type="password" autocomplete="current-password" required></label>
+        <p id="login-error" class="form-error" role="alert"></p>
+        <button class="button button-primary button-block" type="submit">登录</button>
+      </form>
+    </div>
+  </section>
 
-      const dimensions = () => ({
-        cols: Math.max(20, Math.floor((terminalRoot.clientWidth - 28) / 8.4)),
-        rows: Math.max(5, Math.floor((terminalRoot.clientHeight - 28) / 17))
-      });
-      const size = dimensions();
-      term.resize(size.cols, size.rows);
+  <div id="app-shell" class="app-shell" hidden>
+    <aside class="sidebar">
+      <div class="sidebar-brand"><span class="brand-mark">&gt;_</span><div><strong>go-webssh</strong><small>安全访问控制台</small></div></div>
+      <nav id="navigation" class="navigation" aria-label="主导航">
+        <button data-view="dashboard" class="nav-item active">概览</button>
+        <button data-view="assets" class="nav-item">资产管理</button>
+        <button data-view="credentials" data-roles="admin" class="nav-item">凭据管理</button>
+        <button data-view="users" data-roles="admin" class="nav-item">用户与权限</button>
+        <button data-view="sessions" data-roles="admin,auditor" class="nav-item">会话记录</button>
+        <button data-view="audits" data-roles="admin,auditor" class="nav-item">审计日志</button>
+      </nav>
+      <div class="sidebar-foot"><span class="status-dot"></span><span>服务运行中</span></div>
+    </aside>
 
-      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socket = new WebSocket(`${protocol}//${location.host}/ws/default?cols=${size.cols}&rows=${size.rows}`);
-      socket.binaryType = 'arraybuffer';
+    <section class="workspace">
+      <header class="topbar">
+        <div><button id="menu-toggle" class="icon-button" type="button" aria-label="切换导航">☰</button><h1 id="page-title">概览</h1></div>
+        <div class="user-menu"><span id="demo-badge" class="badge badge-info" hidden>静态演示</span><span id="current-user"></span><button id="change-password" class="button" type="button">修改密码</button><button id="logout" class="button" type="button">退出</button></div>
+      </header>
+      <main id="content" class="content" tabindex="-1"></main>
+    </section>
+  </div>
 
-      const setStatus = (state, text) => { status.dataset.state = state; status.lastElementChild.textContent = text; };
-      term.on('data', data => { if (socket.readyState === WebSocket.OPEN) socket.send(data); });
-      socket.addEventListener('open', () => setStatus('online', '已连接'));
-      socket.addEventListener('message', event => term.write(event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : event.data));
-      socket.addEventListener('error', () => setStatus('offline', '连接异常'));
-      socket.addEventListener('close', event => {
-        setStatus('offline', '连接已关闭');
-        const reason = event.reason ? `：${event.reason}` : '';
-        term.writeln(`\r\n\x1b[31mSSH 连接已关闭${reason}\x1b[0m`);
-      });
+  <dialog id="modal" class="modal">
+    <form id="modal-form" method="dialog">
+      <header><h2 id="modal-title"></h2><button id="modal-close" class="icon-button" type="button" aria-label="关闭">×</button></header>
+      <div id="modal-body" class="modal-body"></div>
+      <p id="modal-error" class="form-error" role="alert"></p>
+      <footer><button id="modal-cancel" class="button" type="button">取消</button><button class="button button-primary" type="submit">保存</button></footer>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-      let resizeTimer;
-      window.addEventListener('resize', () => {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => {
-          const next = dimensions();
-          term.resize(next.cols, next.rows);
-          if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', cols: next.cols, rows: next.rows }));
-        }, 100);
-      });
-    })();
-  </script>
+  <script src="./static/js/xterm.min.js"></script>
+  <script src="./static/js/app.js"></script>
 </body>
 </html>

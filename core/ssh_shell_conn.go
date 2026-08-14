@@ -43,6 +43,7 @@ type SshConn struct {
 	Output    <-chan []byte
 	done      chan struct{}
 	closeOnce sync.Once
+	OnInput   func([]byte)
 }
 
 func NewSshConn(cols, rows int, client *ssh.Client) (*SshConn, error) {
@@ -104,6 +105,9 @@ func (c *SshConn) ReadWebSocket(ws *websocket.Conn) error {
 
 		if _, err := c.StdinPipe.Write(data); err != nil {
 			return fmt.Errorf("写入 SSH 终端失败: %w", err)
+		}
+		if c.OnInput != nil {
+			c.OnInput(append([]byte(nil), data...))
 		}
 	}
 }

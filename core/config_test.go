@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig_Defaults(t *testing.T) {
@@ -95,7 +96,7 @@ func TestConfig_AddressIPv6(t *testing.T) {
 }
 
 func TestConfigValidate(t *testing.T) {
-	valid := &Config{Host: "127.0.0.1", Port: 22, User: "root", Addr: ":8080"}
+	valid := &Config{Host: "127.0.0.1", Port: 22, User: "root", Addr: ":8080", DataDir: "data", SessionTTL: 12 * time.Hour, MaxUploadBytes: 100 << 20}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}

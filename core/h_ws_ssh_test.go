@@ -4,17 +4,36 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
-func TestNewHandler(t *testing.T) {
+func TestApplicationHandler(t *testing.T) {
 	assets := fstest.MapFS{
 		"web/html/index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>go-webssh</title>")},
 		"static/app.css":      &fstest.MapFile{Data: []byte("body{}")},
 	}
-	server := httptest.NewServer(NewHandler(&Config{}, assets))
+	cfg := &Config{Host: "127.0.0.1", Port: 22, User: "root", Addr: ":8080", DataDir: t.TempDir(), AdminUser: "admin", AdminPassword: "very-secure-password", SessionTTL: 12 * time.Hour, MaxUploadBytes: 10 << 20}
+	app, err := NewApplication(cfg, assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(app.Handler())
 	defer server.Close()
+
+	securityResponse, err := http.Get(server.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	securityResponse.Body.Close()
+	if securityResponse.Header.Get("Content-Security-Policy") == "" || securityResponse.Header.Get("Permissions-Policy") == "" {
+		t.Fatal("安全响应头缺失")
+	}
+	if securityResponse.Header.Get("Cache-Control") != "" {
+		t.Fatal("健康检查不应被静态资源缓存策略影响")
+	}
 
 	tests := []struct {
 		name        string
@@ -24,7 +43,7 @@ func TestNewHandler(t *testing.T) {
 		body        string
 	}{
 		{name: "首页", path: "/", status: http.StatusOK, contentType: "text/html; charset=utf-8", body: "go-webssh"},
-		{name: "健康检查", path: "/healthz", status: http.StatusOK, contentType: "application/json; charset=utf-8", body: `{"status":"ok"}`},
+		{name: "健康检查", path: "/healthz", status: http.StatusOK, contentType: "application/json; charset=utf-8", body: `"service":"go-webssh-bastion"`},
 		{name: "静态资源", path: "/static/app.css", status: http.StatusOK, contentType: "text/css; charset=utf-8", body: "body{}"},
 		{name: "不存在", path: "/missing", status: http.StatusNotFound, contentType: "text/plain; charset=utf-8", body: "404 page not found"},
 	}
@@ -47,8 +66,8 @@ func TestNewHandler(t *testing.T) {
 			if got := response.Header.Get("Content-Type"); got != tt.contentType {
 				t.Fatalf("Content-Type = %q, want %q", got, tt.contentType)
 			}
-			if string(body) != tt.body && tt.path != "/" && tt.path != "/missing" {
-				t.Fatalf("body = %q, want %q", body, tt.body)
+			if !strings.Contains(string(body), tt.body) {
+				t.Fatalf("body = %q, want to contain %q", body, tt.body)
 			}
 		})
 	}

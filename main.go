@@ -24,10 +24,15 @@ func main() {
 		slog.Error("配置无效", "error", err)
 		os.Exit(1)
 	}
+	app, err := core.NewApplication(cfg, assets)
+	if err != nil {
+		slog.Error("初始化跳板机失败", "error", err)
+		os.Exit(1)
+	}
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           core.NewHandler(cfg, assets),
+		Handler:           app.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
@@ -36,7 +41,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		slog.Info("go-webssh 已启动", "listen", cfg.Addr, "target", cfg.Target())
+		slog.Info("go-webssh 跳板机已启动", "listen", cfg.Addr, "data_dir", cfg.DataDir)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("HTTP 服务异常退出", "error", err)
 			os.Exit(1)

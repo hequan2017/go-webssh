@@ -12,3 +12,14 @@
 *.out
 *.exe
 *.log
+
+# Local bastion state, encrypted credentials and recordings
+data/
+go-webssh.local.exe
+master.key
+state.json
+audit.jsonl
+recordings/
+.env
+.env.*
+!.env.example

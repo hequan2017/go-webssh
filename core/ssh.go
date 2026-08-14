@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,10 +17,20 @@ func NewSshClient(cfg *Config) (*ssh.Client, error) {
 		return nil, err
 	}
 
+	hostKeyCallback := ssh.InsecureIgnoreHostKey()
+	if cfg.HostKeyFingerprint != "" {
+		hostKeyCallback = func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			actual := ssh.FingerprintSHA256(key)
+			if actual != cfg.HostKeyFingerprint {
+				return fmt.Errorf("SSH 主机密钥不匹配: 期望 %s，实际 %s", cfg.HostKeyFingerprint, actual)
+			}
+			return nil
+		}
+	}
 	client, err := ssh.Dial("tcp", cfg.Address(), &ssh.ClientConfig{
 		User:            cfg.User,
 		Auth:            auth,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 兼容原项目行为，生产环境建议放在可信网络或反向代理之后。
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         8 * time.Second,
 	})
 	if err != nil {
@@ -29,6 +40,19 @@ func NewSshClient(cfg *Config) (*ssh.Client, error) {
 }
 
 func buildAuthMethod(cfg *Config) ([]ssh.AuthMethod, error) {
+	if len(cfg.KeyData) > 0 {
+		var signer ssh.Signer
+		var err error
+		if len(cfg.KeyPassphrase) > 0 {
+			signer, err = ssh.ParsePrivateKeyWithPassphrase(cfg.KeyData, cfg.KeyPassphrase)
+		} else {
+			signer, err = ssh.ParsePrivateKey(cfg.KeyData)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("解析 SSH 私钥失败: %w", err)
+		}
+		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
+	}
 	if cfg.KeyPath != "" {
 		signer, err := publicKeySigner(cfg.KeyPath)
 		if err != nil {

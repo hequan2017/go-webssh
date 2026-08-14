@@ -7,26 +7,17 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 )
 
-func NewHandler(cfg *Config, assets fs.FS) http.Handler {
-	mux := http.NewServeMux()
-	staticFiles, err := fs.Sub(assets, "static")
-	if err != nil {
-		panic(err)
-	}
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFiles))))
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-	mux.HandleFunc("GET /", serveIndex(assets))
-	mux.HandleFunc("GET /ws/{id}", wsSSH(cfg))
-	return securityHeaders(mux)
-}
+const (
+	webSocketReadLimit    = 64 << 10
+	webSocketPongWait     = 60 * time.Second
+	webSocketPingInterval = 25 * time.Second
+)
 
 func serveIndex(assets fs.FS) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -40,72 +31,95 @@ func serveIndex(assets fs.FS) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(page)
 	}
 }
 
-func wsSSH(cfg *Config) http.HandlerFunc {
+type sshHooks struct {
+	OnConnected func()
+	OnInput     func([]byte)
+	OnOutput    func([]byte)
+}
+
+func serveSSHWebSocket(w http.ResponseWriter, r *http.Request, cfg *Config, hooks sshHooks) error {
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
 		CheckOrigin:     sameOrigin,
 	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		cols, err := positiveInt(r.URL.Query().Get("cols"), 120)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		rows, err := positiveInt(r.URL.Query().Get("rows"), 32)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+	cols, err := positiveInt(r.URL.Query().Get("cols"), 120)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return err
+	}
+	rows, err := positiveInt(r.URL.Query().Get("rows"), 32)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return err
+	}
 
-		ws, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer ws.Close()
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return err
+	}
+	defer ws.Close()
+	ws.SetReadLimit(webSocketReadLimit)
+	_ = ws.SetReadDeadline(time.Now().Add(webSocketPongWait))
+	ws.SetPongHandler(func(string) error {
+		return ws.SetReadDeadline(time.Now().Add(webSocketPongWait))
+	})
 
-		client, err := NewSshClient(cfg)
-		if err != nil {
-			closeWebSocket(ws, err)
-			return
-		}
-		defer client.Close()
+	client, err := NewSshClient(cfg)
+	if err != nil {
+		closeWebSocket(ws, err)
+		return err
+	}
+	defer client.Close()
 
-		terminal, err := NewSshConn(cols, rows, client)
-		if err != nil {
-			closeWebSocket(ws, err)
-			return
-		}
-		defer terminal.Close()
+	terminal, err := NewSshConn(cols, rows, client)
+	if err != nil {
+		closeWebSocket(ws, err)
+		return err
+	}
+	defer terminal.Close()
+	terminal.OnInput = hooks.OnInput
+	if hooks.OnConnected != nil {
+		hooks.OnConnected()
+	}
 
-		readDone := make(chan error, 1)
-		waitDone := make(chan error, 1)
-		go func() { readDone <- terminal.ReadWebSocket(ws) }()
-		go func() { waitDone <- terminal.Session.Wait() }()
+	readDone := make(chan error, 1)
+	waitDone := make(chan error, 1)
+	go func() { readDone <- terminal.ReadWebSocket(ws) }()
+	go func() { waitDone <- terminal.Session.Wait() }()
+	pingTicker := time.NewTicker(webSocketPingInterval)
+	defer pingTicker.Stop()
 
-		for {
-			select {
-			case data := <-terminal.Output:
-				if err := ws.WriteMessage(websocket.BinaryMessage, data); err != nil {
-					return
-				}
-			case err := <-readDone:
-				if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					slog.Debug("WebSocket 输入结束", "error", err)
-				}
-				return
-			case err := <-waitDone:
-				if err != nil {
-					slog.Debug("SSH 会话结束", "error", err)
-				}
-				return
-			case <-r.Context().Done():
-				return
+	for {
+		select {
+		case data := <-terminal.Output:
+			if hooks.OnOutput != nil {
+				hooks.OnOutput(data)
 			}
+			if err := ws.WriteMessage(websocket.BinaryMessage, data); err != nil {
+				return err
+			}
+		case err := <-readDone:
+			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				slog.Debug("WebSocket 输入结束", "error", err)
+			}
+			return err
+		case err := <-waitDone:
+			if err != nil {
+				slog.Debug("SSH 会话结束", "error", err)
+			}
+			return err
+		case <-pingTicker.C:
+			if err := ws.WriteControl(websocket.PingMessage, nil, writeDeadline()); err != nil {
+				return err
+			}
+		case <-r.Context().Done():
+			return r.Context().Err()
 		}
 	}
 }
@@ -150,6 +164,11 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
